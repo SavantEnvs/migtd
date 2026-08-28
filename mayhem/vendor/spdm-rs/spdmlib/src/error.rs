@@ -1,0 +1,644 @@
+// Copyright (c) 2023 Intel Corporation
+//
+// SPDX-License-Identifier: Apache-2.0 or MIT
+
+use core::{
+    convert::{TryFrom, TryInto},
+    fmt::{self, Debug},
+};
+
+/// Reference: https://github.com/DMTF/libspdm/blob/main/include/library/spdm_return_status.h
+#[repr(u8)]
+#[allow(dead_code)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum StatusSeverity {
+    SUCCESS = 0,
+    #[default]
+    ERROR = 8,
+}
+
+impl TryFrom<u8> for StatusSeverity {
+    type Error = ();
+
+    fn try_from(value: u8) -> core::result::Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::SUCCESS),
+            8 => Ok(Self::ERROR),
+            _ => Err(()),
+        }
+    }
+}
+
+#[repr(u16)]
+#[allow(dead_code)]
+#[allow(non_camel_case_types)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum StatusCodeCore {
+    SUCCESS = 0,
+    #[default]
+    INVALID_PARAMETER = 1,
+    UNSUPPORTED_CAP = 2,
+    INVALID_STATE_LOCAL = 3,
+    INVALID_STATE_PEER = 4,
+    INVALID_MSG_FIELD = 5,
+    INVALID_MSG_SIZE = 6,
+    NEGOTIATION_FAIL = 7,
+    BUSY_PEER = 8,
+    NOT_READY_PEER = 9,
+    ERROR_PEER = 10,
+    RESYNCH_PEER = 11,
+    BUFFER_FULL = 12,
+    BUFFER_TOO_SMALL = 13,
+    SESSION_NUMBER_EXCEED = 14,
+    SESSION_MSG_ERROR = 15,
+    ACQUIRE_FAIL = 16,
+    SESSION_TRY_DISCARD_KEY_UPDATE = 17,
+
+    // only in spdm-rs
+    DECODE_AEAD_FAIL = 0xFE,
+}
+
+impl TryFrom<u16> for StatusCodeCore {
+    type Error = ();
+
+    fn try_from(value: u16) -> core::result::Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::SUCCESS),
+            1 => Ok(Self::INVALID_PARAMETER),
+            2 => Ok(Self::UNSUPPORTED_CAP),
+            3 => Ok(Self::INVALID_STATE_LOCAL),
+            4 => Ok(Self::INVALID_STATE_PEER),
+            5 => Ok(Self::INVALID_MSG_FIELD),
+            6 => Ok(Self::INVALID_MSG_SIZE),
+            7 => Ok(Self::NEGOTIATION_FAIL),
+            8 => Ok(Self::BUSY_PEER),
+            9 => Ok(Self::NOT_READY_PEER),
+            10 => Ok(Self::ERROR_PEER),
+            11 => Ok(Self::RESYNCH_PEER),
+            12 => Ok(Self::BUFFER_FULL),
+            13 => Ok(Self::BUFFER_TOO_SMALL),
+            14 => Ok(Self::SESSION_NUMBER_EXCEED),
+            15 => Ok(Self::SESSION_MSG_ERROR),
+            16 => Ok(Self::ACQUIRE_FAIL),
+            17 => Ok(Self::SESSION_TRY_DISCARD_KEY_UPDATE),
+            0xFE => Ok(Self::DECODE_AEAD_FAIL),
+            _ => Err(()),
+        }
+    }
+}
+
+#[repr(u16)]
+#[allow(dead_code)]
+#[allow(non_camel_case_types)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum StatusCodeCrypto {
+    #[default]
+    CRYPTO_ERROR = 0,
+    VERIF_FAIL = 1,
+    SEQUENCE_NUMBER_OVERFLOW = 2,
+    VERIF_NO_AUTHORITY = 3,
+    FIPS_SELF_TEST_FAIL = 4,
+}
+
+impl TryFrom<u16> for StatusCodeCrypto {
+    type Error = ();
+
+    fn try_from(value: u16) -> core::result::Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::CRYPTO_ERROR),
+            1 => Ok(Self::VERIF_FAIL),
+            2 => Ok(Self::SEQUENCE_NUMBER_OVERFLOW),
+            3 => Ok(Self::VERIF_NO_AUTHORITY),
+            4 => Ok(Self::FIPS_SELF_TEST_FAIL),
+            _ => Err(()),
+        }
+    }
+}
+
+#[repr(u16)]
+#[allow(dead_code)]
+#[allow(non_camel_case_types)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum StatusCodeCertParse {
+    #[default]
+    INVALID_CERT = 0,
+}
+
+impl TryFrom<u16> for StatusCodeCertParse {
+    type Error = ();
+
+    fn try_from(value: u16) -> core::result::Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::INVALID_CERT),
+            _ => Err(()),
+        }
+    }
+}
+
+#[repr(u16)]
+#[allow(dead_code)]
+#[allow(non_camel_case_types)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum StatusCodeTransport {
+    #[default]
+    SEND_FAIL = 0,
+    RECEIVE_FAIL = 1,
+
+    // only in spdm-rs
+    DECAP_FAIL = 0xFE,
+    DECAP_APP_FAIL = 0xFD,
+    ENCAP_FAIL = 0xFC,
+    ENCAP_APP_FAIL = 0xFB,
+}
+
+impl TryFrom<u16> for StatusCodeTransport {
+    type Error = ();
+
+    fn try_from(value: u16) -> core::result::Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::SEND_FAIL),
+            1 => Ok(Self::RECEIVE_FAIL),
+            0xFE => Ok(Self::DECAP_FAIL),
+            0xFD => Ok(Self::DECAP_APP_FAIL),
+            0xFC => Ok(Self::ENCAP_FAIL),
+            0xFB => Ok(Self::ENCAP_APP_FAIL),
+            _ => Err(()),
+        }
+    }
+}
+
+#[repr(u16)]
+#[allow(dead_code)]
+#[allow(non_camel_case_types)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum StatusCodeMeasCollect {
+    MEAS_INVALID_INDEX = 0,
+    #[default]
+    MEAS_INTERNAL_ERROR = 1,
+}
+
+impl TryFrom<u16> for StatusCodeMeasCollect {
+    type Error = ();
+
+    fn try_from(value: u16) -> core::result::Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::MEAS_INVALID_INDEX),
+            1 => Ok(Self::MEAS_INTERNAL_ERROR),
+            _ => Err(()),
+        }
+    }
+}
+
+#[repr(u16)]
+#[allow(dead_code)]
+#[allow(non_camel_case_types)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum StatusCodeRNG {
+    #[default]
+    LOW_ENTROPY = 0,
+}
+
+impl TryFrom<u16> for StatusCodeRNG {
+    type Error = ();
+
+    fn try_from(value: u16) -> core::result::Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::LOW_ENTROPY),
+            _ => Err(()),
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[allow(non_camel_case_types)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub struct StatusCodeVdmError {
+    pub vdm_error_code: u16,
+}
+
+impl TryFrom<u16> for StatusCodeVdmError {
+    type Error = ();
+
+    fn try_from(value: u16) -> core::result::Result<Self, Self::Error> {
+        Ok(Self {
+            vdm_error_code: value,
+        })
+    }
+}
+
+#[allow(dead_code)]
+#[allow(non_camel_case_types)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum StatusCode {
+    SUCCESS,
+    CORE(StatusCodeCore),
+    CRYPTO(StatusCodeCrypto),
+    CERT_PARSE(StatusCodeCertParse),
+    TRANSPORT(StatusCodeTransport),
+    MEAS_COLLECT(StatusCodeMeasCollect),
+    RNG(StatusCodeRNG),
+    VDM(StatusCodeVdmError),
+}
+
+impl Default for StatusCode {
+    fn default() -> Self {
+        Self::CORE(StatusCodeCore::default())
+    }
+}
+
+impl TryFrom<u24> for StatusCode {
+    type Error = ();
+
+    fn try_from(value: u24) -> core::result::Result<Self, Self::Error> {
+        let source: u8 = ((value.get() & 0xFF_00_00) >> 16) as u8;
+        let code: u16 = (value.get() & 0x00_00_FF_FF) as u16;
+        match source {
+            0 => Ok(StatusCode::SUCCESS),
+            1 => Ok(StatusCode::CORE(StatusCodeCore::try_from(code)?)),
+            2 => Ok(StatusCode::CRYPTO(StatusCodeCrypto::try_from(code)?)),
+            3 => Ok(StatusCode::CERT_PARSE(StatusCodeCertParse::try_from(code)?)),
+            4 => Ok(StatusCode::TRANSPORT(StatusCodeTransport::try_from(code)?)),
+            5 => Ok(StatusCode::MEAS_COLLECT(StatusCodeMeasCollect::try_from(
+                code,
+            )?)),
+            6 => Ok(StatusCode::RNG(StatusCodeRNG::try_from(code)?)),
+            7 => Ok(StatusCode::VDM(StatusCodeVdmError::try_from(code)?)),
+            _ => Err(()),
+        }
+    }
+}
+
+impl TryInto<u24> for StatusCode {
+    type Error = ();
+
+    fn try_into(self) -> Result<u24, Self::Error> {
+        match self {
+            StatusCode::SUCCESS => Ok(u24::new(0)),
+            StatusCode::CORE(c) => Ok(u24::new((1 << 16) as u32 + (c as u16) as u32)),
+            StatusCode::CRYPTO(c) => Ok(u24::new((2 << 16) as u32 + (c as u16) as u32)),
+            StatusCode::CERT_PARSE(c) => Ok(u24::new((3 << 16) as u32 + (c as u16) as u32)),
+            StatusCode::TRANSPORT(t) => Ok(u24::new((4 << 16) as u32 + (t as u16) as u32)),
+            StatusCode::MEAS_COLLECT(m) => Ok(u24::new((5 << 16) as u32 + (m as u16) as u32)),
+            StatusCode::RNG(r) => Ok(u24::new((6 << 16) as u32 + (r as u16) as u32)),
+            StatusCode::VDM(v) => Ok(u24::new((7 << 16) as u32 + (v.vdm_error_code) as u32)),
+        }
+    }
+}
+
+pub const SPDM_ERROR_MESSAGE_DATA_MAX_LENGTH: usize = 36; // "SPDM error response message format":
+                                                          //     'SPDMVersion' (1B) +
+                                                          //     'RequestResponseCode' (1B) +
+                                                          //     'Param1' (1B) +
+                                                          //     'Param1' (1B) +
+                                                          //     'ExtendedErrorData' (0-32B)
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct SpdmErrorMessageData {
+    pub length: usize,
+    pub data: [u8; SPDM_ERROR_MESSAGE_DATA_MAX_LENGTH],
+}
+impl Default for SpdmErrorMessageData {
+    fn default() -> Self {
+        SpdmErrorMessageData {
+            length: Default::default(),
+            data: [Default::default(); SPDM_ERROR_MESSAGE_DATA_MAX_LENGTH],
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, Default)]
+pub struct SpdmStatus {
+    pub severity: StatusSeverity,
+    pub status_code: StatusCode,
+    pub error_data: Option<SpdmErrorMessageData>,
+}
+impl PartialEq for SpdmStatus {
+    fn eq(&self, other: &Self) -> bool {
+        // SpdmStatus with same serverity and status_code but different error_data shall be
+        // considered as same SpdmStatus.
+        // Thus, do not care about the error_data here.
+        self.severity == other.severity && self.status_code == other.status_code
+    }
+}
+
+impl Codec for SpdmStatus {
+    fn encode(&self, bytes: &mut codec::Writer) -> Result<usize, codec::EncodeErr> {
+        let mut sc = 0u32;
+        sc += (((self.severity as u8) & 0x0F) as u32) << 28;
+        sc += <StatusCode as TryInto<u24>>::try_into(self.status_code)
+            .map_err(|_| codec::EncodeErr)?
+            .get();
+        sc.encode(bytes)?;
+        Ok(4)
+    }
+
+    fn read(r: &mut codec::Reader) -> Option<Self> {
+        let sc = u32::read(r)?;
+        let severity = ((sc & 0xF0_00_00_00) >> 28) as u8;
+        let severity = StatusSeverity::try_from(severity).ok()?;
+        if (sc & 0x0F_00_00_00) != 0 {
+            return None; //the reserve field
+        }
+        let status_code = u24::new(sc & 0x00_FF_FF_FF);
+        let status_code = StatusCode::try_from(status_code).ok()?;
+
+        Some(Self {
+            severity,
+            status_code,
+            error_data: None,
+        })
+    }
+}
+
+impl SpdmStatus {
+    /// return the u32 encoding
+    pub fn get_u32(&self) -> u32 {
+        let mut r = [0u8; 4];
+        let _ = self.encode(&mut Writer::init(&mut r));
+        u32::from_le_bytes(r)
+    }
+
+    /// get SpdmStatus structure from u32 value
+    pub fn from_u32(status: u32) -> Option<Self> {
+        Self::read_bytes(&status.to_le_bytes())
+    }
+
+    /// Returns true if severity is StatusSeverity::SUCCESS else it returns false.
+    pub fn spdm_status_is_success(&self) -> bool {
+        self.severity == StatusSeverity::SUCCESS
+    }
+
+    /// Returns true if severity is StatusSeverity::ERROR else it returns false.
+    pub fn spdm_status_is_error(&self) -> bool {
+        self.severity == StatusSeverity::ERROR
+    }
+
+    pub fn spdm_status_set_error_data(&mut self, error_data: &[u8]) {
+        // Ensure the slice has no more data than SpdmErrorMessageData  capacity
+        if error_data.len() <= SPDM_ERROR_MESSAGE_DATA_MAX_LENGTH {
+            let mut ed = SpdmErrorMessageData {
+                length: error_data.len(),
+                ..Default::default()
+            };
+            ed.data[..ed.length].copy_from_slice(error_data);
+            self.error_data = Some(ed);
+        } else {
+            // Do not expect more data than SpdmErrorMessageData  capacity.
+            self.error_data = None;
+        }
+    }
+}
+
+impl fmt::Display for SpdmStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Severity: {:?}, Status: {:?}, Code: {})",
+            self.severity,
+            self.status_code,
+            self.get_u32()
+        )
+    }
+}
+
+#[macro_export]
+macro_rules! spdm_return_status {
+    ($severity:expr,  $status_code:expr) => {
+        SpdmStatus {
+            severity: $severity,
+            status_code: $status_code,
+            error_data: None,
+        }
+    };
+}
+
+use codec::{u24, Codec, Writer};
+pub use spdm_return_status;
+
+pub const SPDM_STATUS_SUCCESS: SpdmStatus =
+    spdm_return_status!(StatusSeverity::SUCCESS, StatusCode::SUCCESS);
+
+/* - Core Errors - */
+
+/* The function input parameter is invalid. */
+pub const SPDM_STATUS_INVALID_PARAMETER: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::CORE(StatusCodeCore::INVALID_STATE_LOCAL)
+);
+
+/* Unable to complete operation due to unsupported capabilities by either the caller, the peer,
+ * or both. */
+pub const SPDM_STATUS_UNSUPPORTED_CAP: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::CORE(StatusCodeCore::UNSUPPORTED_CAP)
+);
+
+/* Unable to complete operation due to caller's state. */
+pub const SPDM_STATUS_INVALID_STATE_LOCAL: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::CORE(StatusCodeCore::INVALID_STATE_LOCAL)
+);
+
+/* Unable to complete operation due to peer's state. */
+pub const SPDM_STATUS_INVALID_STATE_PEER: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::CORE(StatusCodeCore::INVALID_STATE_PEER)
+);
+
+/* The received message contains one or more invalid message fields. */
+pub const SPDM_STATUS_INVALID_MSG_FIELD: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::CORE(StatusCodeCore::INVALID_MSG_FIELD)
+);
+
+/* The received message's size is invalid. */
+pub const SPDM_STATUS_INVALID_MSG_SIZE: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::CORE(StatusCodeCore::INVALID_MSG_SIZE)
+);
+
+/* Unable to derive a common set of versions, algorithms, etc. */
+pub const SPDM_STATUS_NEGOTIATION_FAIL: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::CORE(StatusCodeCore::NEGOTIATION_FAIL)
+);
+
+/* Received a Busy error message. */
+pub const SPDM_STATUS_BUSY_PEER: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::CORE(StatusCodeCore::BUSY_PEER)
+);
+
+/* Received a NotReady error message. */
+pub const SPDM_STATUS_NOT_READY_PEER: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::CORE(StatusCodeCore::NOT_READY_PEER)
+);
+
+/* Received an unexpected error message. */
+pub const SPDM_STATUS_ERROR_PEER: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::CORE(StatusCodeCore::ERROR_PEER)
+);
+
+/* Received a RequestResynch error message. */
+pub const SPDM_STATUS_RESYNCH_PEER: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::CORE(StatusCodeCore::RESYNCH_PEER)
+);
+
+/* Unable to append new data to buffer due to resource exhaustion. */
+pub const SPDM_STATUS_BUFFER_FULL: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::CORE(StatusCodeCore::BUFFER_FULL)
+);
+
+/* Unable to return data because caller does not provide big enough buffer. */
+pub const SPDM_STATUS_BUFFER_TOO_SMALL: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::CORE(StatusCodeCore::BUFFER_TOO_SMALL)
+);
+
+/* Unable to allocate more session. */
+pub const SPDM_STATUS_SESSION_NUMBER_EXCEED: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::CORE(StatusCodeCore::SESSION_NUMBER_EXCEED)
+);
+
+/* Decrypt error from peer. */
+pub const SPDM_STATUS_SESSION_MSG_ERROR: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::CORE(StatusCodeCore::SESSION_MSG_ERROR)
+);
+
+/*  Unable to acquire resource. */
+pub const SPDM_STATUS_ACQUIRE_FAIL: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::CORE(StatusCodeCore::ACQUIRE_FAIL)
+);
+
+/*  Re-triable decrypt error from peer - must rollback to backup keys. */
+pub const SPDM_STATUS_SESSION_TRY_DISCARD_KEY_UPDATE: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::CORE(StatusCodeCore::SESSION_TRY_DISCARD_KEY_UPDATE)
+);
+
+/*  Failed to decode AEAD. */
+pub const SPDM_STATUS_DECODE_AEAD_FAIL: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::CORE(StatusCodeCore::DECODE_AEAD_FAIL)
+);
+
+/* - Cryptography Errors - */
+
+/*  Generic failure originating from the cryptography module. */
+pub const SPDM_STATUS_CRYPTO_ERROR: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::CRYPTO(StatusCodeCrypto::CRYPTO_ERROR)
+);
+
+/*  Verification of the provided signature digest, signature, or AEAD tag failed. */
+pub const SPDM_STATUS_VERIF_FAIL: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::CRYPTO(StatusCodeCrypto::VERIF_FAIL)
+);
+
+/*  AEAD sequence number overflow. */
+pub const SPDM_STATUS_SEQUENCE_NUMBER_OVERFLOW: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::CRYPTO(StatusCodeCrypto::SEQUENCE_NUMBER_OVERFLOW)
+);
+
+/*  Provided cert is valid but is not authoritative(mismatch the root cert). */
+pub const SPDM_STATUS_VERIF_NO_AUTHORITY: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::CRYPTO(StatusCodeCrypto::VERIF_NO_AUTHORITY)
+);
+
+/*  FIPS self test failed. */
+pub const SPDM_STATUS_FIPS_SELF_TEST_FAIL: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::CRYPTO(StatusCodeCrypto::FIPS_SELF_TEST_FAIL)
+);
+
+/* - Certificate Parsing Errors - */
+
+/*  Certificate is malformed or does not comply to x.509 standard. */
+pub const SPDM_STATUS_INVALID_CERT: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::CERT_PARSE(StatusCodeCertParse::INVALID_CERT)
+);
+
+/* - Transport Errors - */
+
+/*  Unable to send message to peer. */
+pub const SPDM_STATUS_SEND_FAIL: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::TRANSPORT(StatusCodeTransport::SEND_FAIL)
+);
+
+/*  Unable to receive message from peer. */
+pub const SPDM_STATUS_RECEIVE_FAIL: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::TRANSPORT(StatusCodeTransport::RECEIVE_FAIL)
+);
+
+/*  Unable to decap transport buffer. */
+pub const SPDM_STATUS_DECAP_FAIL: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::TRANSPORT(StatusCodeTransport::DECAP_FAIL)
+);
+
+/*  Unable to decap app buffer. */
+pub const SPDM_STATUS_DECAP_APP_FAIL: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::TRANSPORT(StatusCodeTransport::DECAP_APP_FAIL)
+);
+
+/*  Unable to encap transport buffer. */
+pub const SPDM_STATUS_ENCAP_FAIL: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::TRANSPORT(StatusCodeTransport::ENCAP_FAIL)
+);
+
+/*  Unable to encap app buffer. */
+pub const SPDM_STATUS_ENCAP_APP_FAIL: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::TRANSPORT(StatusCodeTransport::ENCAP_APP_FAIL)
+);
+
+/* - Measurement Collection Errors - */
+
+/*  Unable to collect measurement because of invalid index. */
+pub const SPDM_STATUS_MEAS_INVALID_INDEX: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::MEAS_COLLECT(StatusCodeMeasCollect::MEAS_INVALID_INDEX)
+);
+
+/*  Unable to collect measurement because of internal error. */
+pub const SPDM_STATUS_MEAS_INTERNAL_ERROR: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::MEAS_COLLECT(StatusCodeMeasCollect::MEAS_INTERNAL_ERROR)
+);
+
+/* - Random Number Generation Errors - */
+
+/*  Unable to produce random number due to lack of entropy. */
+pub const SPDM_STATUS_LOW_ENTROPY: SpdmStatus = spdm_return_status!(
+    StatusSeverity::ERROR,
+    StatusCode::RNG(StatusCodeRNG::LOW_ENTROPY)
+);
+
+#[macro_export]
+macro_rules! SPDM_STATUS_VDM_DEFINED_ERROR {
+    ($vdm_error_code:expr) => {
+        SpdmStatus {
+            severity: StatusSeverity::ERROR,
+            status_code: StatusCode::VDM(StatusCodeVdmError {
+                vdm_error_code: $vdm_error_code,
+            }),
+            error_data: None,
+        };
+    };
+}
+
+pub type SpdmResult<T = ()> = core::result::Result<T, SpdmStatus>;

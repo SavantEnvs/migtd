@@ -1,0 +1,12 @@
+[package]
+name = "sys_time"
+version = "0.1.0"
+authors = ["Xiaoyu Lu <xiaoyux.lu@intel.com>"]
+edition = "2018"
+license = "Apache-2.0 or MIT"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+x86_64 = { version = "=0.15.2", features = ["instructions"], default-features = false }
+time = { version = ">=0.3.47", default-features = false }

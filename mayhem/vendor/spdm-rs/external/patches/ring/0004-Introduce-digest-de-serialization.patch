@@ -1,0 +1,248 @@
+From 53478021f819589f1b080b515a4420b4317a0aec Mon Sep 17 00:00:00 2001
+From: Stanislaw Grams <stanislaw.grams@intel.com>
+Date: Mon, 9 Feb 2026 13:45:20 +0100
+Subject: [PATCH] Introduce digest de/serialization
+
+Signed-off-by: Stanislaw Grams <stanislaw.grams@intel.com>
+---
+ src/digest.rs          | 131 +++++++++++++++++++++++++++++++++++++++++
+ src/digest/dynstate.rs |  60 +++++++++++++++++++
+ 2 files changed, 191 insertions(+)
+
+diff --git a/src/digest.rs b/src/digest.rs
+index e77123778..024dfab50 100644
+--- a/src/digest.rs
++++ b/src/digest.rs
+@@ -29,6 +29,8 @@ use crate::{
+ };
+ use core::num::Wrapping;
+ 
++extern crate alloc;
++
+ pub(crate) use self::finish_error::FinishError;
+ 
+ mod dynstate;
+@@ -144,6 +146,62 @@ impl BlockContext {
+     ) -> (usize, &'d [u8]) {
+         (self.algorithm.block_data_order)(&mut self.state, data, cpu_features)
+     }
++
++    /// Serialize the BlockContext to bytes.
++    /// Format: [algorithm_id (1 byte)] [completed_bytes (8 bytes)] [state (32 or 64 bytes)]
++    pub(crate) fn to_bytes(&self) -> alloc::vec::Vec<u8> {
++        let mut bytes = alloc::vec::Vec::new();
++
++        // Serialize algorithm ID
++        let alg_id: u8 = match self.algorithm.id {
++            AlgorithmID::SHA1 => 1,
++            AlgorithmID::SHA256 => 2,
++            AlgorithmID::SHA384 => 3,
++            AlgorithmID::SHA512 => 4,
++            AlgorithmID::SHA512_256 => 5,
++        };
++        bytes.push(alg_id);
++
++        // Serialize completed_bytes
++        bytes.extend_from_slice(&self.completed_bytes.to_le_bytes());
++
++        // Serialize state
++        bytes.extend_from_slice(&self.state.to_bytes());
++
++        bytes
++    }
++
++    /// Deserialize a BlockContext from bytes.
++    pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Self, ()> {
++        if bytes.len() < 9 {
++            return Err(());
++        }
++
++        // Deserialize algorithm ID
++        let alg_id = bytes[0];
++        let algorithm: &'static Algorithm = match alg_id {
++            1 => &SHA1_FOR_LEGACY_USE_ONLY,
++            2 => &SHA256,
++            3 => &SHA384,
++            4 => &SHA512,
++            5 => &SHA512_256,
++            _ => return Err(()),
++        };
++
++        // Deserialize completed_bytes
++        let completed_bytes = u64::from_le_bytes([
++            bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8],
++        ]);
++
++        // Deserialize state
++        let state = DynState::from_bytes(&bytes[9..])?;
++
++        Ok(Self {
++            state,
++            completed_bytes,
++            algorithm,
++        })
++    }
+ }
+ 
+ pub(crate) type InputTooLongError = error::InputTooLongError<u64>;
+@@ -284,6 +342,79 @@ impl Context {
+     pub fn algorithm(&self) -> &'static Algorithm {
+         self.block.algorithm
+     }
++
++    /// Serialize the Context to bytes.
++    /// Format: [BlockContext bytes] [num_pending (8 bytes)] [pending buffer (num_pending bytes)]
++    pub fn to_bytes(&self) -> alloc::vec::Vec<u8> {
++        let mut bytes = self.block.to_bytes();
++
++        // Serialize num_pending
++        bytes.extend_from_slice(&(self.num_pending as u64).to_le_bytes());
++
++        // Serialize pending buffer (only the bytes that are actually pending)
++        bytes.extend_from_slice(&self.pending[..self.num_pending]);
++
++        bytes
++    }
++
++    /// Deserialize a Context from bytes.
++    pub fn from_bytes(bytes: &[u8]) -> Result<Self, ()> {
++        // Need at least: 1 (alg_id) + 8 (completed_bytes) + 32 (min state) + 8 (num_pending)
++        if bytes.len() < 49 {
++            return Err(());
++        }
++
++        // Find where BlockContext ends by determining state size
++        // Algorithm ID is at bytes[0]
++        let state_size = match bytes[0] {
++            1 | 2 => 32,     // SHA1, SHA256 use 32-byte state
++            3 | 4 | 5 => 64, // SHA384, SHA512, SHA512_256 use 64-byte state
++            _ => return Err(()),
++        };
++
++        let block_ctx_size = 1 + 8 + state_size; // alg_id + completed_bytes + state
++
++        if bytes.len() < block_ctx_size + 8 {
++            return Err(());
++        }
++
++        // Deserialize BlockContext
++        let block = BlockContext::from_bytes(&bytes[..block_ctx_size])?;
++
++        // Deserialize num_pending
++        let num_pending_bytes = &bytes[block_ctx_size..block_ctx_size + 8];
++        let num_pending = u64::from_le_bytes([
++            num_pending_bytes[0],
++            num_pending_bytes[1],
++            num_pending_bytes[2],
++            num_pending_bytes[3],
++            num_pending_bytes[4],
++            num_pending_bytes[5],
++            num_pending_bytes[6],
++            num_pending_bytes[7],
++        ]) as usize;
++
++        // Validate num_pending
++        let block_len = block.algorithm.block_len();
++        if num_pending >= block_len {
++            return Err(());
++        }
++
++        if bytes.len() < block_ctx_size + 8 + num_pending {
++            return Err(());
++        }
++
++        // Deserialize pending buffer
++        let mut pending = [0u8; MAX_BLOCK_LEN];
++        pending[..num_pending]
++            .copy_from_slice(&bytes[block_ctx_size + 8..block_ctx_size + 8 + num_pending]);
++
++        Ok(Self {
++            block,
++            pending,
++            num_pending,
++        })
++    }
+ }
+ 
+ /// Returns the digest of `data` using the given digest algorithm.
+diff --git a/src/digest/dynstate.rs b/src/digest/dynstate.rs
+index c74f69f90..15d28f253 100644
+--- a/src/digest/dynstate.rs
++++ b/src/digest/dynstate.rs
+@@ -16,6 +16,8 @@ use super::{format_output, sha1, sha2, Output};
+ use crate::{cpu, polyfill::slice};
+ use core::mem::size_of;
+ 
++extern crate alloc;
++
+ // Invariant: When constructed with `new32` (resp. `new64`), `As32` (resp.
+ // `As64`) is the active variant.
+ // Invariant: The active variant never changes after initialization.
+@@ -44,6 +46,64 @@ impl DynState {
+             }
+         }
+     }
++
++    /// Serialize the state to bytes.
++    /// For State32: returns 32 bytes (8 * u32)
++    /// For State64: returns 64 bytes (8 * u64)
++    pub(super) fn to_bytes(&self) -> alloc::vec::Vec<u8> {
++        match self {
++            Self::As32(state) => {
++                let mut bytes = alloc::vec::Vec::with_capacity(32);
++                for word in state.iter() {
++                    bytes.extend_from_slice(&word.0.to_le_bytes());
++                }
++                bytes
++            }
++            Self::As64(state) => {
++                let mut bytes = alloc::vec::Vec::with_capacity(64);
++                for word in state.iter() {
++                    bytes.extend_from_slice(&word.0.to_le_bytes());
++                }
++                bytes
++            }
++        }
++    }
++
++    /// Deserialize the state from bytes.
++    /// For 32-byte input: creates State32
++    /// For 64-byte input: creates State64
++    pub(super) fn from_bytes(bytes: &[u8]) -> Result<Self, ()> {
++        use core::num::Wrapping;
++
++        match bytes.len() {
++            32 => {
++                let mut state = [Wrapping(0u32); 8];
++                for (i, chunk) in bytes.chunks_exact(4).enumerate() {
++                    if i >= 8 {
++                        return Err(());
++                    }
++                    let word = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
++                    state[i] = Wrapping(word);
++                }
++                Ok(Self::As32(state))
++            }
++            64 => {
++                let mut state = [Wrapping(0u64); 8];
++                for (i, chunk) in bytes.chunks_exact(8).enumerate() {
++                    if i >= 8 {
++                        return Err(());
++                    }
++                    let word = u64::from_le_bytes([
++                        chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6],
++                        chunk[7],
++                    ]);
++                    state[i] = Wrapping(word);
++                }
++                Ok(Self::As64(state))
++            }
++            _ => Err(()),
++        }
++    }
+ }
+ 
+ pub(super) fn sha1_block_data_order<'d>(
+-- 
+2.52.0
+

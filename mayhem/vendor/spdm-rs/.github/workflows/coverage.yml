@@ -1,0 +1,165 @@
+name: Coverage
+
+env:
+  RUST_TOOLCHAIN: 1.93.0
+  TOOLCHAIN_PROFILE: minimal
+
+on:
+  push:
+    branches: [coverage]
+    tags:
+      - "**"
+  pull_request:
+    branches: [coverage]
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+jobs:
+  generate_coverage:
+    runs-on: ubuntu-latest
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+
+      - name: Checkout sources
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: recursive
+
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          version: "14.0"
+          directory: ${{ runner.temp }}/llvm
+
+      - name: Install toolchain
+        uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1.0.7
+        with:
+          profile: ${{ env.TOOLCHAIN_PROFILE }}
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          override: true
+          components: rust-src, rustfmt, clippy, llvm-tools-preview
+
+      - name: Add `x86_64-unknown-none` target
+        run: rustup target add x86_64-unknown-none
+
+      - name: Run cargo install grcov
+        uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # v1.0.3
+        with:
+          command: install
+          args: grcov
+
+      - name: Cache
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+
+      - name: Check code
+        run: |
+          ./sh_script/build.sh -c
+
+      - name: Install AFL (Linux)
+        uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # v1.0.3
+        with:
+          command: install
+          args: --force --version 0.12.12 afl
+        if: runner.os == 'Linux'
+
+      - name: Install Cargo-Fuzz (Linux)
+        uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # v1.0.3
+        with:
+          command: install
+          args: cargo-fuzz
+        if: runner.os == 'Linux'
+
+      - name: set core_pattern for core
+        run: |
+          sudo su - root <<EOF
+          echo core >/proc/sys/kernel/core_pattern
+          pushd /sys/devices/system/cpu
+          echo performance | tee cpu*/cpufreq/scaling_governor
+          popd
+          exit
+          EOF
+        if: runner.os == 'Linux'
+
+      - name: cargo build
+        env:
+          LLVM_PROFILE_FILE: build-%p-%m.profraw
+          RUSTFLAGS: "-C instrument-coverage"
+          CC_x86_64_unknown_none: clang
+          AR_x86_64_unknown_none: llvm-ar
+          RUN_REQUESTER_FEATURES: "spdm-ring"
+          RUN_RESPONDER_FEATURES: "spdm-ring"
+        run: |
+          ./sh_script/build.sh -r
+
+      - name: cargo build hashed-transcript-data
+        env:
+          LLVM_PROFILE_FILE: build-hashed-transcript-data-%p-%m.profraw
+          RUSTFLAGS: "-C instrument-coverage"
+          CC_x86_64_unknown_none: clang
+          AR_x86_64_unknown_none: llvm-ar
+          RUN_REQUESTER_FEATURES: "spdm-ring,hashed-transcript-data,async-executor"
+          RUN_RESPONDER_FEATURES: "spdm-ring,hashed-transcript-data,async-executor"
+        run: |
+          ./sh_script/build.sh -r
+
+      - name: cargo build spdm-mbedtls
+        env:
+          LLVM_PROFILE_FILE: build-hashed-transcript-data-%p-%m.profraw
+          RUSTFLAGS: "-C instrument-coverage"
+          CC_x86_64_unknown_none: clang
+          AR_x86_64_unknown_none: llvm-ar
+          RUN_REQUESTER_FEATURES: "spdm-mbedtls,async-executor"
+          RUN_RESPONDER_FEATURES: "spdm-mbedtls,async-executor"
+        run: |
+          ./sh_script/build.sh -r
+
+      - name: cargo build mbedtls hashed-transcript-data
+        env:
+          LLVM_PROFILE_FILE: build-hashed-transcript-data-%p-%m.profraw
+          RUSTFLAGS: "-C instrument-coverage"
+          CC_x86_64_unknown_none: clang
+          AR_x86_64_unknown_none: llvm-ar
+          RUN_REQUESTER_FEATURES: "spdm-mbedtls,hashed-transcript-data,async-executor"
+          RUN_RESPONDER_FEATURES: "spdm-mbedtls,hashed-transcript-data,async-executor"
+        run: |
+          ./sh_script/build.sh -r
+
+      - name: Run fuzz hash-transcript-data
+        env:
+          FUZZ_HASH_TRANSCRIPT_DATA_FEATURE: true
+        run: |
+          ./sh_script/fuzz_run.sh -c Scoverage
+
+      - name: Run fuzz
+        env:
+          FUZZ_HASH_TRANSCRIPT_DATA_FEATURE: false
+        run: |
+          ./sh_script/fuzz_run.sh -c Scoverage
+
+      - name: Run tests and collect coverage
+        run: |
+          grcov $(find . -name "*.profraw") \
+            --branch \
+            --binary-path ./target/debug/ \
+            -s . \
+            -t html \
+            --ignore-not-existing \
+            -o coverage
+          grcov $(find . -name "*.profraw") \
+            --branch \
+            --binary-path ./target/debug/ \
+            -s . \
+            -t lcov \
+            --ignore-not-existing \
+            -o coverage/lcov.info
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: coverage_data-${{ github.sha }}
+          path: coverage/
+      - name: Upload coverage reports to Codecov with GitHub Action
+        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5.5.2
+        with:
+          files: coverage/lcov.info
+          fail_ci_if_error: false
+          verbose: true

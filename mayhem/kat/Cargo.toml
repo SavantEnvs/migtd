@@ -1,0 +1,29 @@
+# Known-answer-test (KAT) oracle probe for the migtd Mayhem integration.
+# Standalone crate under mayhem/ with its own [workspace] table so it does NOT join
+# migtd's root workspace. It CALLS the unmodified `policy` + `crypto` libraries (path
+# deps) — the SAME migration-policy and X.509 parser surfaces the `policy` and `x509`
+# fuzz targets exercise — and prints exact, deterministic values that mayhem/test.sh
+# greps. Mirrors the fuzz crates' [patch.crates-io] so rustls's `ring` resolves to the
+# patched vendored copy under deps/td-shim/library/ring.
+[package]
+name = "migtd-kat"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[[bin]]
+name = "migtd-kat"
+path = "src/main.rs"
+
+[dependencies]
+der = { version = "0.7.9", features = ["oid", "alloc", "derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+policy = { path = "../../src/policy" }
+crypto = { path = "../../src/crypto" }
+
+[patch.crates-io]
+ring = { path = "../../deps/td-shim/library/ring" }
+
+# Keep this crate out of the root crate's workspace resolution.
+[workspace]
+members = ["."]

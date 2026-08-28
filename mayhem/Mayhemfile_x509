@@ -1,0 +1,14 @@
+# migtd in-process libFuzzer target (upstream src/crypto/fuzz/fuzz_targets/x509.rs):
+# feeds fuzz bytes to crypto::x509::Certificate::from_der — the X.509 certificate DER
+# parser used for SPDM peer cert-chain / TD-report attestation certificate decoding.
+project: savantenvs/migtd
+target: x509
+image: savantenvs/migtd:latest
+
+cmds:
+  - cmd: /mayhem/x509
+    libfuzzer: true
+
+testsuite:
+  - https://$MAYHEM_DOMAIN/$MAYHEM_PROJECT/$MAYHEM_TARGET/testsuite.tar
+  - file://mayhem/x509/testsuite

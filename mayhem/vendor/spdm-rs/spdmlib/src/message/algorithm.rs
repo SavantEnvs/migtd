@@ -1,0 +1,1163 @@
+// Copyright (c) 2020 Intel Corporation
+//
+// SPDX-License-Identifier: Apache-2.0 or MIT
+
+use crate::common::spdm_codec::*;
+use crate::error::SPDM_STATUS_BUFFER_FULL;
+use crate::protocol::*;
+use crate::{common, error::SpdmStatus};
+
+use codec::{Codec, Reader, Writer};
+
+pub const MAX_SUPPORTED_ALG_STRUCTURE_COUNT: usize = 6;
+
+#[derive(Debug, Clone, Default)]
+pub struct SpdmNegotiateAlgorithmsRequestPayload {
+    pub measurement_specification: SpdmMeasurementSpecification,
+    pub other_params_support: SpdmAlgoOtherParams,
+    pub base_asym_algo: SpdmBaseAsymAlgo,
+    pub base_hash_algo: SpdmBaseHashAlgo,
+    pub pqc_asym_algo: SpdmPqcAsymAlgo,
+    pub mel_specification: SpdmMelSpecification,
+    pub alg_struct_count: u8,
+    pub alg_struct: [SpdmAlgStruct; MAX_SUPPORTED_ALG_STRUCTURE_COUNT],
+}
+
+impl SpdmCodec for SpdmNegotiateAlgorithmsRequestPayload {
+    fn spdm_encode(
+        &self,
+        context: &mut common::SpdmContext,
+        bytes: &mut Writer,
+    ) -> Result<usize, SpdmStatus> {
+        let mut cnt = 0usize;
+
+        if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion11 {
+            cnt += self
+                .alg_struct_count
+                .encode(bytes)
+                .map_err(|_| SPDM_STATUS_BUFFER_FULL)?; // param1
+        } else {
+            cnt += 0u8.encode(bytes).map_err(|_| SPDM_STATUS_BUFFER_FULL)?; // param1
+        }
+
+        cnt += 0u8.encode(bytes).map_err(|_| SPDM_STATUS_BUFFER_FULL)?; // param2
+
+        let mut length: u16 = 32;
+        if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion11 {
+            let alg_fixed_count = 2u8;
+            length += ((2 + alg_fixed_count) * self.alg_struct_count) as u16;
+        }
+        cnt += length.encode(bytes).map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
+
+        cnt += self
+            .measurement_specification
+            .encode(bytes)
+            .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
+
+        if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion12 {
+            cnt += self
+                .other_params_support
+                .encode(bytes)
+                .map_err(|_| SPDM_STATUS_BUFFER_FULL)?; //OtherParamsSupport
+        } else {
+            cnt += 0u8.encode(bytes).map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
+        }
+
+        cnt += self
+            .base_asym_algo
+            .encode(bytes)
+            .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
+        cnt += self
+            .base_hash_algo
+            .encode(bytes)
+            .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
+
+        if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion14 {
+            cnt += self
+                .pqc_asym_algo
+                .encode(bytes)
+                .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
+        } else {
+            for _i in 0..4 {
+                cnt += 0u8.encode(bytes).map_err(|_| SPDM_STATUS_BUFFER_FULL)?; // reserved2
+            }
+        }
+
+        for _i in 0..8 {
+            cnt += 0u8.encode(bytes).map_err(|_| SPDM_STATUS_BUFFER_FULL)?; // reserved2
+        }
+
+        cnt += 0u8.encode(bytes).map_err(|_| SPDM_STATUS_BUFFER_FULL)?; // ext_asym_count
+
+        cnt += 0u8.encode(bytes).map_err(|_| SPDM_STATUS_BUFFER_FULL)?; // ext_hash_count
+
+        cnt += 0u8.encode(bytes).map_err(|_| SPDM_STATUS_BUFFER_FULL)?; // reserved3
+
+        if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion13 {
+            cnt += self
+                .mel_specification
+                .encode(bytes)
+                .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
+        } else {
+            cnt += 0u8.encode(bytes).map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
+        }
+
+        if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion11 {
+            for algo in self.alg_struct.iter().take(self.alg_struct_count as usize) {
+                cnt += algo.encode(bytes).map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
+            }
+        }
+        Ok(cnt)
+    }
+
+    fn spdm_read(
+        context: &mut common::SpdmContext,
+        r: &mut Reader,
+    ) -> Option<SpdmNegotiateAlgorithmsRequestPayload> {
+        let mut alg_struct_count = 0;
+        if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion11 {
+            alg_struct_count = u8::read(r)?; // param1
+            if alg_struct_count > MAX_SUPPORTED_ALG_STRUCTURE_COUNT as u8 {
+                return None;
+            }
+        } else {
+            u8::read(r)?; // param1
+        }
+        u8::read(r)?; // param2
+
+        let length = u16::read(r)?;
+        let measurement_specification = SpdmMeasurementSpecification::read(r)?;
+
+        let other_params_support =
+            if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion12 {
+                SpdmAlgoOtherParams::read(r)?
+            } else {
+                u8::read(r)?;
+                SpdmAlgoOtherParams::default()
+            };
+
+        let base_asym_algo = SpdmBaseAsymAlgo::read(r)?;
+        let base_hash_algo = SpdmBaseHashAlgo::read(r)?;
+
+        let pqc_asym_algo = if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion14
+        {
+            SpdmPqcAsymAlgo::read(r)?
+        } else {
+            for _i in 0..4 {
+                u8::read(r)?; // reserved2
+            }
+            SpdmPqcAsymAlgo::default()
+        };
+
+        for _i in 0..8 {
+            u8::read(r)?; // reserved2
+        }
+
+        let ext_asym_count = u8::read(r)?;
+        if ext_asym_count != 0 {
+            return None;
+        }
+
+        let ext_hash_count = u8::read(r)?;
+        if ext_hash_count != 0 {
+            return None;
+        }
+
+        u8::read(r)?; // reserved3
+
+        let mel_specification =
+            if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion13 {
+                SpdmMelSpecification::read(r)?
+            } else {
+                u8::read(r)?;
+                SpdmMelSpecification::default()
+            };
+
+        let mut alg_struct =
+            gen_array_clone(SpdmAlgStruct::default(), MAX_SUPPORTED_ALG_STRUCTURE_COUNT);
+        if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion11 {
+            let mut dhe_present = false;
+            let mut aead_present = false;
+            let mut req_asym_present = false;
+            let mut key_schedule_present = false;
+            let mut pqc_req_asym_present = false;
+            let mut kem_present = false;
+            let mut current_type = SpdmAlgType::Unknown(0);
+            for algo in alg_struct.iter_mut().take(alg_struct_count as usize) {
+                let alg = SpdmAlgStruct::read(r)?;
+                if current_type.get_u8() >= alg.alg_type.get_u8() {
+                    return None;
+                }
+                current_type = alg.alg_type;
+                match alg.alg_supported {
+                    SpdmAlg::SpdmAlgoDhe(_) => {
+                        if dhe_present {
+                            return None;
+                        }
+                        dhe_present = true;
+                    }
+                    SpdmAlg::SpdmAlgoAead(_) => {
+                        if aead_present {
+                            return None;
+                        }
+                        aead_present = true;
+                    }
+                    SpdmAlg::SpdmAlgoReqAsym(_) => {
+                        if req_asym_present {
+                            return None;
+                        }
+                        req_asym_present = true;
+                    }
+                    SpdmAlg::SpdmAlgoKeySchedule(_) => {
+                        if key_schedule_present {
+                            return None;
+                        }
+                        key_schedule_present = true;
+                    }
+                    SpdmAlg::SpdmAlgoPqcReqAsym(_) => {
+                        if pqc_req_asym_present {
+                            return None;
+                        }
+                        pqc_req_asym_present = true;
+                    }
+                    SpdmAlg::SpdmAlgoKem(_) => {
+                        if kem_present {
+                            return None;
+                        }
+                        kem_present = true;
+                    }
+                    SpdmAlg::SpdmAlgoUnknown(_) => {
+                        return None;
+                    }
+                }
+                *algo = alg;
+            }
+        }
+
+        //
+        // check length
+        //
+        let mut calc_length: u16 = 32;
+        if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion11 {
+            let alg_fixed_count = 2u8;
+            calc_length += ((2 + alg_fixed_count) * alg_struct_count) as u16;
+        }
+
+        if length != calc_length {
+            return None;
+        }
+
+        Some(SpdmNegotiateAlgorithmsRequestPayload {
+            measurement_specification,
+            other_params_support,
+            base_asym_algo,
+            base_hash_algo,
+            pqc_asym_algo,
+            mel_specification,
+            alg_struct_count,
+            alg_struct,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SpdmAlgorithmsResponsePayload {
+    pub measurement_specification_sel: SpdmMeasurementSpecification,
+    pub other_params_selection: SpdmAlgoOtherParams,
+    pub measurement_hash_algo: SpdmMeasurementHashAlgo,
+    pub base_asym_sel: SpdmBaseAsymAlgo,
+    pub base_hash_sel: SpdmBaseHashAlgo,
+    pub pqc_asym_sel: SpdmPqcAsymAlgo,
+    pub mel_specification_sel: SpdmMelSpecification,
+    pub alg_struct_count: u8,
+    pub alg_struct: [SpdmAlgStruct; MAX_SUPPORTED_ALG_STRUCTURE_COUNT],
+}
+
+impl SpdmCodec for SpdmAlgorithmsResponsePayload {
+    fn spdm_encode(
+        &self,
+        context: &mut common::SpdmContext,
+        bytes: &mut Writer,
+    ) -> Result<usize, SpdmStatus> {
+        let mut cnt = 0usize;
+
+        if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion11 {
+            cnt += self
+                .alg_struct_count
+                .encode(bytes)
+                .map_err(|_| SPDM_STATUS_BUFFER_FULL)?; // param1
+        } else {
+            cnt += 0u8.encode(bytes).map_err(|_| SPDM_STATUS_BUFFER_FULL)?; // param1
+        }
+
+        cnt += 0u8.encode(bytes).map_err(|_| SPDM_STATUS_BUFFER_FULL)?; // param2
+
+        let mut length: u16 = 36;
+        if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion11 {
+            let alg_fixed_count = 2u8;
+            length += ((2 + alg_fixed_count) * self.alg_struct_count) as u16;
+        }
+        cnt += length.encode(bytes).map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
+
+        cnt += self
+            .measurement_specification_sel
+            .encode(bytes)
+            .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
+
+        if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion12 {
+            cnt += self
+                .other_params_selection
+                .encode(bytes)
+                .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
+        } else {
+            cnt += 0u8.encode(bytes).map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
+        }
+
+        cnt += self
+            .measurement_hash_algo
+            .encode(bytes)
+            .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
+        cnt += self
+            .base_asym_sel
+            .encode(bytes)
+            .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
+        cnt += self
+            .base_hash_sel
+            .encode(bytes)
+            .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
+
+        if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion14 {
+            cnt += self
+                .pqc_asym_sel
+                .encode(bytes)
+                .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
+        } else {
+            for _i in 0..4 {
+                cnt += 0u8.encode(bytes).map_err(|_| SPDM_STATUS_BUFFER_FULL)?; // reserved2
+            }
+        }
+
+        for _i in 0..7 {
+            cnt += 0u8.encode(bytes).map_err(|_| SPDM_STATUS_BUFFER_FULL)?; // reserved2
+        }
+
+        if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion13 {
+            cnt += self
+                .mel_specification_sel
+                .encode(bytes)
+                .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
+        } else {
+            cnt += 0u8.encode(bytes).map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
+        }
+
+        cnt += 0u8.encode(bytes).map_err(|_| SPDM_STATUS_BUFFER_FULL)?; // ext_asym_count
+
+        cnt += 0u8.encode(bytes).map_err(|_| SPDM_STATUS_BUFFER_FULL)?; // ext_hash_count
+
+        cnt += 0u16.encode(bytes).map_err(|_| SPDM_STATUS_BUFFER_FULL)?; // reserved3
+
+        if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion11 {
+            for algo in self.alg_struct.iter().take(self.alg_struct_count as usize) {
+                cnt += algo.encode(bytes).map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
+            }
+        }
+        Ok(cnt)
+    }
+
+    fn spdm_read(
+        context: &mut common::SpdmContext,
+        r: &mut Reader,
+    ) -> Option<SpdmAlgorithmsResponsePayload> {
+        let mut alg_struct_count = 0;
+        if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion11 {
+            alg_struct_count = u8::read(r)?; // param1
+            if alg_struct_count > MAX_SUPPORTED_ALG_STRUCTURE_COUNT as u8 {
+                return None;
+            }
+        } else {
+            u8::read(r)?; // param1
+        }
+        u8::read(r)?; // param2
+
+        let length = u16::read(r)?;
+
+        let measurement_specification_sel = SpdmMeasurementSpecification::read(r)?;
+        if !measurement_specification_sel.is_no_more_than_one_selected() {
+            return None;
+        }
+        if (context
+            .negotiate_info
+            .rsp_capabilities_sel
+            .contains(SpdmResponseCapabilityFlags::MEAS_CAP_NO_SIG)
+            || context
+                .negotiate_info
+                .rsp_capabilities_sel
+                .contains(SpdmResponseCapabilityFlags::MEAS_CAP_SIG))
+            && !measurement_specification_sel.is_valid_one_select()
+        {
+            return None;
+        }
+
+        let other_params_selection =
+            if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion12 {
+                SpdmAlgoOtherParams::read(r)?
+            } else {
+                u8::read(r)?;
+                SpdmAlgoOtherParams::default()
+            };
+        if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion12
+            && (context
+                .negotiate_info
+                .rsp_capabilities_sel
+                .contains(SpdmResponseCapabilityFlags::KEY_EX_CAP)
+                || context
+                    .negotiate_info
+                    .rsp_capabilities_sel
+                    .contains(SpdmResponseCapabilityFlags::PSK_CAP_WITHOUT_CONTEXT)
+                || context
+                    .negotiate_info
+                    .rsp_capabilities_sel
+                    .contains(SpdmResponseCapabilityFlags::PSK_CAP_WITH_CONTEXT))
+            && !other_params_selection.contains(SpdmAlgoOtherParams::OPAQUE_DATA_FMT1)
+        {
+            return None;
+        }
+
+        let measurement_hash_algo = SpdmMeasurementHashAlgo::read(r)?;
+        if !measurement_hash_algo.is_no_more_than_one_selected() {
+            return None;
+        }
+        if (context
+            .negotiate_info
+            .rsp_capabilities_sel
+            .contains(SpdmResponseCapabilityFlags::MEAS_CAP_NO_SIG)
+            || context
+                .negotiate_info
+                .rsp_capabilities_sel
+                .contains(SpdmResponseCapabilityFlags::MEAS_CAP_SIG))
+            && !measurement_hash_algo.is_valid_one_select()
+        {
+            return None;
+        }
+
+        let base_asym_sel = SpdmBaseAsymAlgo::read(r)?;
+        if !base_asym_sel.is_no_more_than_one_selected() {
+            return None;
+        }
+
+        let base_hash_sel = SpdmBaseHashAlgo::read(r)?;
+        if !base_hash_sel.is_no_more_than_one_selected() {
+            return None;
+        }
+        if (context
+            .negotiate_info
+            .rsp_capabilities_sel
+            .contains(SpdmResponseCapabilityFlags::CERT_CAP)
+            || context
+                .negotiate_info
+                .rsp_capabilities_sel
+                .contains(SpdmResponseCapabilityFlags::CHAL_CAP)
+            || context
+                .negotiate_info
+                .rsp_capabilities_sel
+                .contains(SpdmResponseCapabilityFlags::MEAS_CAP_SIG)
+            || (context
+                .negotiate_info
+                .rsp_capabilities_sel
+                .contains(SpdmResponseCapabilityFlags::KEY_EX_CAP)
+                && context
+                    .negotiate_info
+                    .req_capabilities_sel
+                    .contains(SpdmRequestCapabilityFlags::KEY_EX_CAP))
+            || ((context
+                .negotiate_info
+                .rsp_capabilities_sel
+                .contains(SpdmResponseCapabilityFlags::PSK_CAP_WITHOUT_CONTEXT)
+                || context
+                    .negotiate_info
+                    .rsp_capabilities_sel
+                    .contains(SpdmResponseCapabilityFlags::PSK_CAP_WITH_CONTEXT))
+                && context
+                    .negotiate_info
+                    .req_capabilities_sel
+                    .contains(SpdmRequestCapabilityFlags::PSK_CAP)))
+            && !base_hash_sel.is_valid_one_select()
+        {
+            return None;
+        }
+
+        let pqc_asym_sel = if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion12
+        {
+            SpdmPqcAsymAlgo::read(r)?
+        } else {
+            for _i in 0..4 {
+                u8::read(r)?; // reserved2
+            }
+            SpdmPqcAsymAlgo::default()
+        };
+        if !pqc_asym_sel.is_no_more_than_one_selected() {
+            return None;
+        }
+        if base_asym_sel.is_valid_one_select() && pqc_asym_sel.is_valid_one_select() {
+            return None;
+        }
+        if (context
+            .negotiate_info
+            .rsp_capabilities_sel
+            .contains(SpdmResponseCapabilityFlags::CERT_CAP)
+            || context
+                .negotiate_info
+                .rsp_capabilities_sel
+                .contains(SpdmResponseCapabilityFlags::CHAL_CAP)
+            || context
+                .negotiate_info
+                .rsp_capabilities_sel
+                .contains(SpdmResponseCapabilityFlags::MEAS_CAP_SIG)
+            || (context
+                .negotiate_info
+                .rsp_capabilities_sel
+                .contains(SpdmResponseCapabilityFlags::KEY_EX_CAP)
+                && context
+                    .negotiate_info
+                    .req_capabilities_sel
+                    .contains(SpdmRequestCapabilityFlags::KEY_EX_CAP)))
+            && !base_asym_sel.is_valid_one_select()
+            && !pqc_asym_sel.is_valid_one_select()
+        {
+            return None;
+        }
+
+        for _i in 0..7 {
+            u8::read(r)?; // reserved2
+        }
+
+        let mel_specification_sel =
+            if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion13 {
+                SpdmMelSpecification::read(r)?
+            } else {
+                u8::read(r)?;
+                SpdmMelSpecification::default()
+            };
+
+        let ext_asym_count = u8::read(r)?;
+        if ext_asym_count != 0 {
+            return None;
+        }
+
+        let ext_hash_count = u8::read(r)?;
+        if ext_hash_count != 0 {
+            return None;
+        }
+
+        u16::read(r)?; // reserved3
+
+        let mut alg_struct =
+            gen_array_clone(SpdmAlgStruct::default(), MAX_SUPPORTED_ALG_STRUCTURE_COUNT);
+        if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion11 {
+            let mut dhe_present = false;
+            let mut aead_present = false;
+            let mut req_asym_present = false;
+            let mut key_schedule_present = false;
+            let mut pqc_req_asym_present = false;
+            let mut kem_present = false;
+            let mut current_type = SpdmAlgType::Unknown(0);
+            let mut dhe_sel = SpdmDheAlgo::default();
+            let mut req_asym_sel = SpdmReqAsymAlgo::default();
+            let mut pqc_req_asym_sel = SpdmPqcReqAsymAlgo::default();
+            let mut kem_sel = SpdmKemAlgo::default();
+            for algo in alg_struct.iter_mut().take(alg_struct_count as usize) {
+                let alg = SpdmAlgStruct::read(r)?;
+                if current_type.get_u8() >= alg.alg_type.get_u8() {
+                    return None;
+                }
+                current_type = alg.alg_type;
+                match alg.alg_supported {
+                    SpdmAlg::SpdmAlgoDhe(v) => {
+                        if dhe_present {
+                            return None;
+                        }
+                        dhe_present = true;
+                        dhe_sel = v;
+                        if !dhe_sel.is_no_more_than_one_selected() {
+                            return None;
+                        }
+                    }
+                    SpdmAlg::SpdmAlgoAead(v) => {
+                        if aead_present {
+                            return None;
+                        }
+                        aead_present = true;
+                        let aead_sel = v;
+                        if !aead_sel.is_no_more_than_one_selected() {
+                            return None;
+                        }
+                        if ((context
+                            .negotiate_info
+                            .rsp_capabilities_sel
+                            .contains(SpdmResponseCapabilityFlags::ENCRYPT_CAP)
+                            && context
+                                .negotiate_info
+                                .req_capabilities_sel
+                                .contains(SpdmRequestCapabilityFlags::ENCRYPT_CAP))
+                            || (context
+                                .negotiate_info
+                                .rsp_capabilities_sel
+                                .contains(SpdmResponseCapabilityFlags::MAC_CAP)
+                                && context
+                                    .negotiate_info
+                                    .req_capabilities_sel
+                                    .contains(SpdmRequestCapabilityFlags::MAC_CAP)))
+                            && !aead_sel.is_valid_one_select()
+                        {
+                            return None;
+                        }
+                    }
+                    SpdmAlg::SpdmAlgoReqAsym(v) => {
+                        if req_asym_present {
+                            return None;
+                        }
+                        req_asym_present = true;
+                        req_asym_sel = v;
+                        if !req_asym_sel.is_no_more_than_one_selected() {
+                            return None;
+                        }
+                    }
+                    SpdmAlg::SpdmAlgoKeySchedule(v) => {
+                        if key_schedule_present {
+                            return None;
+                        }
+                        key_schedule_present = true;
+                        let key_schedule_sel = v;
+                        if !key_schedule_sel.is_no_more_than_one_selected() {
+                            return None;
+                        }
+                        if ((context
+                            .negotiate_info
+                            .rsp_capabilities_sel
+                            .contains(SpdmResponseCapabilityFlags::KEY_EX_CAP)
+                            && context
+                                .negotiate_info
+                                .req_capabilities_sel
+                                .contains(SpdmRequestCapabilityFlags::KEY_EX_CAP))
+                            || ((context
+                                .negotiate_info
+                                .rsp_capabilities_sel
+                                .contains(SpdmResponseCapabilityFlags::PSK_CAP_WITHOUT_CONTEXT)
+                                || context
+                                    .negotiate_info
+                                    .rsp_capabilities_sel
+                                    .contains(SpdmResponseCapabilityFlags::PSK_CAP_WITH_CONTEXT))
+                                && context
+                                    .negotiate_info
+                                    .req_capabilities_sel
+                                    .contains(SpdmRequestCapabilityFlags::PSK_CAP)))
+                            && !key_schedule_sel.is_valid_one_select()
+                        {
+                            return None;
+                        }
+                    }
+                    SpdmAlg::SpdmAlgoPqcReqAsym(v) => {
+                        if pqc_req_asym_present {
+                            return None;
+                        }
+                        pqc_req_asym_present = true;
+                        pqc_req_asym_sel = v;
+                        if !pqc_req_asym_sel.is_no_more_than_one_selected() {
+                            return None;
+                        }
+                    }
+                    SpdmAlg::SpdmAlgoKem(v) => {
+                        if kem_present {
+                            return None;
+                        }
+                        kem_present = true;
+                        kem_sel = v;
+                        if !kem_sel.is_no_more_than_one_selected() {
+                            return None;
+                        }
+                    }
+                    SpdmAlg::SpdmAlgoUnknown(_v) => {
+                        return None;
+                    }
+                }
+                *algo = alg;
+            }
+            if dhe_sel.is_valid_one_select() && kem_sel.is_valid_one_select() {
+                return None;
+            }
+            if (context
+                .negotiate_info
+                .rsp_capabilities_sel
+                .contains(SpdmResponseCapabilityFlags::KEY_EX_CAP)
+                && context
+                    .negotiate_info
+                    .req_capabilities_sel
+                    .contains(SpdmRequestCapabilityFlags::KEY_EX_CAP))
+                && !dhe_sel.is_valid_one_select()
+                && !kem_sel.is_valid_one_select()
+            {
+                return None;
+            }
+            if req_asym_sel.is_valid_one_select() && pqc_req_asym_sel.is_valid_one_select() {
+                return None;
+            }
+            if (context
+                .negotiate_info
+                .rsp_capabilities_sel
+                .contains(SpdmResponseCapabilityFlags::MUT_AUTH_CAP)
+                && context
+                    .negotiate_info
+                    .req_capabilities_sel
+                    .contains(SpdmRequestCapabilityFlags::MUT_AUTH_CAP))
+                && !req_asym_sel.is_valid_one_select()
+                && !pqc_req_asym_sel.is_valid_one_select()
+            {
+                return None;
+            }
+        }
+
+        let mut calc_length: u16 = 36;
+        if context.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion11 {
+            let alg_fixed_count = 2u8;
+            calc_length += ((2 + alg_fixed_count) * alg_struct_count) as u16;
+        }
+
+        if length != calc_length {
+            return None;
+        }
+
+        Some(SpdmAlgorithmsResponsePayload {
+            measurement_specification_sel,
+            other_params_selection,
+            measurement_hash_algo,
+            base_asym_sel,
+            base_hash_sel,
+            pqc_asym_sel,
+            mel_specification_sel,
+            alg_struct_count,
+            alg_struct,
+        })
+    }
+}
+
+#[cfg(test)]
+#[path = "mod_test.common.inc.rs"]
+mod testlib;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::{SpdmConfigInfo, SpdmContext, SpdmProvisionInfo};
+    use testlib::{create_spdm_context, DeviceIO, TransportEncap};
+    extern crate alloc;
+
+    #[test]
+    fn test_case0_spdm_negotiate_algorithms_request_payload() {
+        let u8_slice = &mut [0u8; 56];
+        let mut writer = Writer::init(u8_slice);
+        let value = SpdmNegotiateAlgorithmsRequestPayload {
+            measurement_specification: SpdmMeasurementSpecification::DMTF,
+            other_params_support: SpdmAlgoOtherParams::OPAQUE_DATA_FMT1
+                | SpdmAlgoOtherParams::MULTI_KEY_CONN,
+            base_asym_algo: SpdmBaseAsymAlgo::TPM_ALG_RSASSA_2048,
+            base_hash_algo: SpdmBaseHashAlgo::TPM_ALG_SHA_256,
+            pqc_asym_algo: SpdmPqcAsymAlgo::ALG_MLDSA_87,
+            mel_specification: SpdmMelSpecification::DMTF_MEL_SPEC,
+            alg_struct_count: MAX_SUPPORTED_ALG_STRUCTURE_COUNT as u8,
+            alg_struct: [
+                SpdmAlgStruct {
+                    alg_type: SpdmAlgType::SpdmAlgTypeDHE,
+                    alg_supported: SpdmAlg::SpdmAlgoDhe(SpdmDheAlgo::SECP_256_R1),
+                },
+                SpdmAlgStruct {
+                    alg_type: SpdmAlgType::SpdmAlgTypeAEAD,
+                    alg_supported: SpdmAlg::SpdmAlgoAead(SpdmAeadAlgo::AES_128_GCM),
+                },
+                SpdmAlgStruct {
+                    alg_type: SpdmAlgType::SpdmAlgTypeReqAsym,
+                    alg_supported: SpdmAlg::SpdmAlgoReqAsym(
+                        SpdmReqAsymAlgo::TPM_ALG_ECDSA_ECC_NIST_P256,
+                    ),
+                },
+                SpdmAlgStruct {
+                    alg_type: SpdmAlgType::SpdmAlgTypeKeySchedule,
+                    alg_supported: SpdmAlg::SpdmAlgoKeySchedule(
+                        SpdmKeyScheduleAlgo::SPDM_KEY_SCHEDULE,
+                    ),
+                },
+                SpdmAlgStruct {
+                    alg_type: SpdmAlgType::SpdmAlgTypePqcReqAsym,
+                    alg_supported: SpdmAlg::SpdmAlgoPqcReqAsym(SpdmPqcReqAsymAlgo::ALG_MLDSA_87),
+                },
+                SpdmAlgStruct {
+                    alg_type: SpdmAlgType::SpdmAlgTypeKEM,
+                    alg_supported: SpdmAlg::SpdmAlgoKem(SpdmKemAlgo::ALG_MLKEM_1024),
+                },
+            ],
+        };
+        create_spdm_context!(context);
+        context.negotiate_info.spdm_version_sel = SpdmVersion::SpdmVersion13;
+
+        assert!(value.spdm_encode(&mut context, &mut writer).is_ok());
+        let mut reader = Reader::init(u8_slice);
+        assert_eq!(56, reader.left());
+        let spdm_sturct_data =
+            SpdmNegotiateAlgorithmsRequestPayload::spdm_read(&mut context, &mut reader).unwrap();
+        assert_eq!(
+            spdm_sturct_data.measurement_specification,
+            SpdmMeasurementSpecification::DMTF
+        );
+        assert_eq!(
+            spdm_sturct_data.other_params_support,
+            SpdmAlgoOtherParams::OPAQUE_DATA_FMT1 | SpdmAlgoOtherParams::MULTI_KEY_CONN
+        );
+        assert_eq!(
+            spdm_sturct_data.base_asym_algo,
+            SpdmBaseAsymAlgo::TPM_ALG_RSASSA_2048
+        );
+        assert_eq!(
+            spdm_sturct_data.base_hash_algo,
+            SpdmBaseHashAlgo::TPM_ALG_SHA_256
+        );
+        assert_eq!(
+            spdm_sturct_data.mel_specification,
+            SpdmMelSpecification::DMTF_MEL_SPEC
+        );
+        assert_eq!(
+            spdm_sturct_data.alg_struct_count,
+            MAX_SUPPORTED_ALG_STRUCTURE_COUNT as u8
+        );
+        assert_eq!(
+            spdm_sturct_data.alg_struct[0].alg_type,
+            SpdmAlgType::SpdmAlgTypeDHE
+        );
+        assert_eq!(
+            spdm_sturct_data.alg_struct[0].alg_supported,
+            SpdmAlg::SpdmAlgoDhe(SpdmDheAlgo::SECP_256_R1)
+        );
+        assert_eq!(
+            spdm_sturct_data.alg_struct[1].alg_type,
+            SpdmAlgType::SpdmAlgTypeAEAD
+        );
+        assert_eq!(
+            spdm_sturct_data.alg_struct[1].alg_supported,
+            SpdmAlg::SpdmAlgoAead(SpdmAeadAlgo::AES_128_GCM)
+        );
+        assert_eq!(
+            spdm_sturct_data.alg_struct[2].alg_type,
+            SpdmAlgType::SpdmAlgTypeReqAsym
+        );
+        assert_eq!(
+            spdm_sturct_data.alg_struct[2].alg_supported,
+            SpdmAlg::SpdmAlgoReqAsym(SpdmReqAsymAlgo::TPM_ALG_ECDSA_ECC_NIST_P256,)
+        );
+        assert_eq!(
+            spdm_sturct_data.alg_struct[3].alg_type,
+            SpdmAlgType::SpdmAlgTypeKeySchedule
+        );
+        assert_eq!(
+            spdm_sturct_data.alg_struct[3].alg_supported,
+            SpdmAlg::SpdmAlgoKeySchedule(SpdmKeyScheduleAlgo::SPDM_KEY_SCHEDULE,)
+        );
+        assert_eq!(2, reader.left());
+    }
+
+    #[test]
+    fn test_case1_spdm_negotiate_algorithms_request_payload() {
+        let u8_slice = &mut [0u8; 48];
+        let mut writer = Writer::init(u8_slice);
+        let value = SpdmNegotiateAlgorithmsRequestPayload {
+            measurement_specification: SpdmMeasurementSpecification::empty(),
+            other_params_support: SpdmAlgoOtherParams::empty(),
+            base_asym_algo: SpdmBaseAsymAlgo::empty(),
+            base_hash_algo: SpdmBaseHashAlgo::empty(),
+            pqc_asym_algo: SpdmPqcAsymAlgo::empty(),
+            mel_specification: SpdmMelSpecification::empty(),
+            alg_struct_count: 0,
+            alg_struct: gen_array_clone(
+                SpdmAlgStruct::default(),
+                MAX_SUPPORTED_ALG_STRUCTURE_COUNT,
+            ),
+        };
+
+        create_spdm_context!(context);
+        context.negotiate_info.spdm_version_sel = SpdmVersion::SpdmVersion13;
+
+        assert!(value.spdm_encode(&mut context, &mut writer).is_ok());
+        let mut reader = Reader::init(u8_slice);
+        assert_eq!(48, reader.left());
+        let spdm_sturct_data =
+            SpdmNegotiateAlgorithmsRequestPayload::spdm_read(&mut context, &mut reader).unwrap();
+        assert_eq!(
+            spdm_sturct_data.measurement_specification,
+            SpdmMeasurementSpecification::empty()
+        );
+        assert_eq!(spdm_sturct_data.base_asym_algo, SpdmBaseAsymAlgo::empty());
+        assert_eq!(spdm_sturct_data.base_hash_algo, SpdmBaseHashAlgo::empty());
+        assert_eq!(
+            spdm_sturct_data.mel_specification,
+            SpdmMelSpecification::empty()
+        );
+        assert_eq!(spdm_sturct_data.alg_struct_count, 0);
+        assert_eq!(18, reader.left());
+    }
+    #[test]
+    fn test_case2_spdm_negotiate_algorithms_request_payload() {
+        let u8_slice = &mut [0u8; 48];
+        let mut writer = Writer::init(u8_slice);
+        let value = SpdmNegotiateAlgorithmsRequestPayload {
+            measurement_specification: SpdmMeasurementSpecification::DMTF,
+            other_params_support: SpdmAlgoOtherParams::empty(),
+            base_asym_algo: SpdmBaseAsymAlgo::TPM_ALG_RSASSA_2048,
+            base_hash_algo: SpdmBaseHashAlgo::TPM_ALG_SHA_256,
+            pqc_asym_algo: SpdmPqcAsymAlgo::ALG_MLDSA_87,
+            mel_specification: SpdmMelSpecification::empty(),
+            alg_struct_count: 0,
+            alg_struct: gen_array_clone(
+                SpdmAlgStruct::default(),
+                MAX_SUPPORTED_ALG_STRUCTURE_COUNT,
+            ),
+        };
+
+        create_spdm_context!(context);
+        context.negotiate_info.spdm_version_sel = SpdmVersion::SpdmVersion11;
+
+        assert!(value.spdm_encode(&mut context, &mut writer).is_ok());
+        u8_slice[26] = 1;
+        u8_slice[31] = 1;
+        let mut reader = Reader::init(u8_slice);
+        assert_eq!(48, reader.left());
+        let spdm_negotiate_algorithms_request_payload =
+            SpdmNegotiateAlgorithmsRequestPayload::spdm_read(&mut context, &mut reader);
+        assert_eq!(spdm_negotiate_algorithms_request_payload.is_none(), true);
+    }
+    #[test]
+    fn test_case0_spdm_algorithms_response_payload() {
+        let u8_slice = &mut [0u8; 58];
+        let mut writer = Writer::init(u8_slice);
+        let value = SpdmAlgorithmsResponsePayload {
+            measurement_specification_sel: SpdmMeasurementSpecification::DMTF,
+            other_params_selection: SpdmAlgoOtherParams::OPAQUE_DATA_FMT1
+                | SpdmAlgoOtherParams::MULTI_KEY_CONN,
+            measurement_hash_algo: SpdmMeasurementHashAlgo::RAW_BIT_STREAM,
+            base_asym_sel: SpdmBaseAsymAlgo::TPM_ALG_RSASSA_2048,
+            base_hash_sel: SpdmBaseHashAlgo::TPM_ALG_SHA_256,
+            pqc_asym_sel: SpdmPqcAsymAlgo::empty(),
+            mel_specification_sel: SpdmMelSpecification::DMTF_MEL_SPEC,
+            alg_struct_count: MAX_SUPPORTED_ALG_STRUCTURE_COUNT as u8,
+            alg_struct: [
+                SpdmAlgStruct {
+                    alg_type: SpdmAlgType::SpdmAlgTypeDHE,
+                    alg_supported: SpdmAlg::SpdmAlgoDhe(SpdmDheAlgo::SECP_256_R1),
+                },
+                SpdmAlgStruct {
+                    alg_type: SpdmAlgType::SpdmAlgTypeAEAD,
+                    alg_supported: SpdmAlg::SpdmAlgoAead(SpdmAeadAlgo::AES_128_GCM),
+                },
+                SpdmAlgStruct {
+                    alg_type: SpdmAlgType::SpdmAlgTypeReqAsym,
+                    alg_supported: SpdmAlg::SpdmAlgoReqAsym(
+                        SpdmReqAsymAlgo::TPM_ALG_ECDSA_ECC_NIST_P256,
+                    ),
+                },
+                SpdmAlgStruct {
+                    alg_type: SpdmAlgType::SpdmAlgTypeKeySchedule,
+                    alg_supported: SpdmAlg::SpdmAlgoKeySchedule(
+                        SpdmKeyScheduleAlgo::SPDM_KEY_SCHEDULE,
+                    ),
+                },
+                SpdmAlgStruct {
+                    alg_type: SpdmAlgType::SpdmAlgTypePqcReqAsym,
+                    alg_supported: SpdmAlg::SpdmAlgoPqcReqAsym(SpdmPqcReqAsymAlgo::empty()),
+                },
+                SpdmAlgStruct {
+                    alg_type: SpdmAlgType::SpdmAlgTypeKEM,
+                    alg_supported: SpdmAlg::SpdmAlgoKem(SpdmKemAlgo::empty()),
+                },
+            ],
+        };
+
+        create_spdm_context!(context);
+        context.negotiate_info.spdm_version_sel = SpdmVersion::SpdmVersion13;
+
+        context.config_info.measurement_specification = SpdmMeasurementSpecification::DMTF;
+        context.config_info.measurement_hash_algo = SpdmMeasurementHashAlgo::RAW_BIT_STREAM;
+        context.config_info.base_asym_algo = SpdmBaseAsymAlgo::TPM_ALG_RSASSA_2048;
+        context.config_info.base_hash_algo = SpdmBaseHashAlgo::TPM_ALG_SHA_256;
+
+        assert!(value.spdm_encode(&mut context, &mut writer).is_ok());
+        let mut reader = Reader::init(u8_slice);
+        assert_eq!(58, reader.left());
+        let spdm_sturct_data =
+            SpdmAlgorithmsResponsePayload::spdm_read(&mut context, &mut reader).unwrap();
+        assert_eq!(
+            spdm_sturct_data.measurement_specification_sel,
+            SpdmMeasurementSpecification::DMTF
+        );
+        assert_eq!(
+            spdm_sturct_data.other_params_selection,
+            SpdmAlgoOtherParams::OPAQUE_DATA_FMT1 | SpdmAlgoOtherParams::MULTI_KEY_CONN
+        );
+        assert_eq!(
+            spdm_sturct_data.measurement_hash_algo,
+            SpdmMeasurementHashAlgo::RAW_BIT_STREAM
+        );
+        assert_eq!(
+            spdm_sturct_data.base_asym_sel,
+            SpdmBaseAsymAlgo::TPM_ALG_RSASSA_2048
+        );
+        assert_eq!(
+            spdm_sturct_data.base_hash_sel,
+            SpdmBaseHashAlgo::TPM_ALG_SHA_256
+        );
+        assert_eq!(
+            spdm_sturct_data.mel_specification_sel,
+            SpdmMelSpecification::DMTF_MEL_SPEC
+        );
+        assert_eq!(
+            spdm_sturct_data.alg_struct_count,
+            MAX_SUPPORTED_ALG_STRUCTURE_COUNT as u8
+        );
+        assert_eq!(
+            spdm_sturct_data.alg_struct[0].alg_type,
+            SpdmAlgType::SpdmAlgTypeDHE
+        );
+        assert_eq!(
+            spdm_sturct_data.alg_struct[0].alg_supported,
+            SpdmAlg::SpdmAlgoDhe(SpdmDheAlgo::SECP_256_R1)
+        );
+        assert_eq!(
+            spdm_sturct_data.alg_struct[1].alg_type,
+            SpdmAlgType::SpdmAlgTypeAEAD
+        );
+        assert_eq!(
+            spdm_sturct_data.alg_struct[1].alg_supported,
+            SpdmAlg::SpdmAlgoAead(SpdmAeadAlgo::AES_128_GCM)
+        );
+        assert_eq!(
+            spdm_sturct_data.alg_struct[2].alg_type,
+            SpdmAlgType::SpdmAlgTypeReqAsym
+        );
+        assert_eq!(
+            spdm_sturct_data.alg_struct[2].alg_supported,
+            SpdmAlg::SpdmAlgoReqAsym(SpdmReqAsymAlgo::TPM_ALG_ECDSA_ECC_NIST_P256,)
+        );
+        assert_eq!(
+            spdm_sturct_data.alg_struct[3].alg_type,
+            SpdmAlgType::SpdmAlgTypeKeySchedule
+        );
+        assert_eq!(
+            spdm_sturct_data.alg_struct[3].alg_supported,
+            SpdmAlg::SpdmAlgoKeySchedule(SpdmKeyScheduleAlgo::SPDM_KEY_SCHEDULE,)
+        );
+        assert_eq!(0, reader.left());
+    }
+    #[test]
+    fn test_case1_spdm_algorithms_response_payload() {
+        let u8_slice = &mut [0u8; 48];
+        let mut writer = Writer::init(u8_slice);
+        let value = SpdmAlgorithmsResponsePayload {
+            measurement_specification_sel: SpdmMeasurementSpecification::DMTF,
+            other_params_selection: SpdmAlgoOtherParams::OPAQUE_DATA_FMT1
+                | SpdmAlgoOtherParams::MULTI_KEY_CONN,
+            measurement_hash_algo: SpdmMeasurementHashAlgo::RAW_BIT_STREAM,
+            base_asym_sel: SpdmBaseAsymAlgo::TPM_ALG_RSASSA_2048,
+            base_hash_sel: SpdmBaseHashAlgo::TPM_ALG_SHA_256,
+            pqc_asym_sel: SpdmPqcAsymAlgo::ALG_MLDSA_87,
+            mel_specification_sel: SpdmMelSpecification::DMTF_MEL_SPEC,
+            alg_struct_count: 0,
+            alg_struct: gen_array_clone(
+                SpdmAlgStruct::default(),
+                MAX_SUPPORTED_ALG_STRUCTURE_COUNT,
+            ),
+        };
+
+        create_spdm_context!(context);
+        context.negotiate_info.spdm_version_sel = SpdmVersion::SpdmVersion13;
+
+        assert!(value.spdm_encode(&mut context, &mut writer).is_ok());
+
+        u8_slice[30] = 1; // ext_asym_count
+        let mut reader = Reader::init(u8_slice);
+        assert_eq!(48, reader.left());
+        let spdm_algorithms_response_payload =
+            SpdmAlgorithmsResponsePayload::spdm_read(&mut context, &mut reader);
+        assert_eq!(spdm_algorithms_response_payload.is_none(), true);
+        u8_slice[30] = 0;
+
+        u8_slice[0] = 1; // number of algorithm structure tables
+        u8_slice[35] = 1; // alg_type
+        let mut reader = Reader::init(u8_slice);
+        assert_eq!(48, reader.left());
+        let spdm_algorithms_response_payload =
+            SpdmAlgorithmsResponsePayload::spdm_read(&mut context, &mut reader);
+        assert_eq!(spdm_algorithms_response_payload.is_none(), true);
+        u8_slice[0] = 0;
+        u8_slice[35] = 0;
+
+        u8_slice[5] = 0x12; // other_params_selection
+        let mut reader = Reader::init(u8_slice);
+        assert_eq!(48, reader.left());
+        let spdm_algorithms_response_payload =
+            SpdmAlgorithmsResponsePayload::spdm_read(&mut context, &mut reader);
+        assert_eq!(spdm_algorithms_response_payload.is_none(), false);
+        assert_eq!(
+            spdm_algorithms_response_payload
+                .unwrap()
+                .other_params_selection,
+            SpdmAlgoOtherParams::OPAQUE_DATA_FMT1 | SpdmAlgoOtherParams::MULTI_KEY_CONN
+        );
+    }
+    #[test]
+    fn test_case2_spdm_algorithms_response_payload() {
+        let u8_slice = &mut [0u8; 50];
+        let mut writer = Writer::init(u8_slice);
+        let value = SpdmAlgorithmsResponsePayload {
+            measurement_specification_sel: SpdmMeasurementSpecification::empty(),
+            other_params_selection: SpdmAlgoOtherParams::empty(),
+            measurement_hash_algo: SpdmMeasurementHashAlgo::empty(),
+            base_asym_sel: SpdmBaseAsymAlgo::empty(),
+            base_hash_sel: SpdmBaseHashAlgo::empty(),
+            pqc_asym_sel: SpdmPqcAsymAlgo::empty(),
+            mel_specification_sel: SpdmMelSpecification::empty(),
+            alg_struct_count: 0,
+            alg_struct: gen_array_clone(
+                SpdmAlgStruct::default(),
+                MAX_SUPPORTED_ALG_STRUCTURE_COUNT,
+            ),
+        };
+
+        create_spdm_context!(context);
+        context.negotiate_info.spdm_version_sel = SpdmVersion::SpdmVersion13;
+
+        assert!(value.spdm_encode(&mut context, &mut writer).is_ok());
+        let mut reader = Reader::init(u8_slice);
+        assert_eq!(50, reader.left());
+        let spdm_sturct_data =
+            SpdmAlgorithmsResponsePayload::spdm_read(&mut context, &mut reader).unwrap();
+        assert_eq!(
+            spdm_sturct_data.measurement_specification_sel,
+            SpdmMeasurementSpecification::empty()
+        );
+        assert_eq!(
+            spdm_sturct_data.other_params_selection,
+            SpdmAlgoOtherParams::empty()
+        );
+        assert_eq!(
+            spdm_sturct_data.measurement_hash_algo,
+            SpdmMeasurementHashAlgo::empty()
+        );
+        assert_eq!(spdm_sturct_data.base_asym_sel, SpdmBaseAsymAlgo::empty());
+        assert_eq!(spdm_sturct_data.base_hash_sel, SpdmBaseHashAlgo::empty());
+        assert_eq!(
+            spdm_sturct_data.mel_specification_sel,
+            SpdmMelSpecification::empty()
+        );
+        assert_eq!(spdm_sturct_data.alg_struct_count, 0);
+        assert_eq!(16, reader.left());
+    }
+}
+
+#[cfg(test)]
+#[path = "algorithm_test.rs"]
+mod algorithm_test;

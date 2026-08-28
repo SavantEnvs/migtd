@@ -1,0 +1,73 @@
+name: FUZZING CODE
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+  workflow_dispatch:
+
+jobs:
+  fuzzing_test:
+    strategy:
+      matrix:
+        fuzz_hash_transcript_data_feature: [true, false]
+        fuzz_mut_auth_feature: [true, false]
+
+    runs-on: ubuntu-22.04
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      - name: install NASM
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          version: "14.0"
+          directory: ${{ runner.temp }}/llvm
+
+      - name: Checkout sources
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: recursive
+
+      - name: Install toolchain
+        uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1.0.7
+        with:
+          profile: minimal
+          toolchain: nightly
+          override: true
+          components: rust-src, rustfmt, clippy, llvm-tools-preview
+
+      - name: Install AFL (Linux)
+        uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # v1.0.3
+        with:
+          command: install
+          args: --force cargo-afl
+        if: runner.os == 'Linux'
+
+      - name: Install Cargo-Fuzz (Linux)
+        uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # v1.0.3
+        with:
+          command: install
+          args: cargo-fuzz
+        if: runner.os == 'Linux'
+      - name: set core_pattern for core
+        run: |
+          sudo su - root <<EOF
+          echo core >/proc/sys/kernel/core_pattern
+          pushd /sys/devices/system/cpu
+          echo performance | tee cpu*/cpufreq/scaling_governor
+          popd
+          exit
+          EOF
+        if: runner.os == 'Linux'
+
+      - name: Run fuzz
+        env:
+          FUZZ_HASH_TRANSCRIPT_DATA_FEATURE: ${{ matrix.fuzz_hash_transcript_data_feature }}
+          FUZZ_MUT_AUTH_FEATURE: ${{ matrix.fuzz_mut_auth_feature }}
+        run: |
+          ./sh_script/fuzz_run.sh

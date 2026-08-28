@@ -1,0 +1,13 @@
+# migtd in-process libFuzzer target (upstream src/migtd/fuzz/fuzz_targets/
+# migration_info_hob.rs): feeds fuzz bytes to migtd::migration::data::read_mig_info —
+# the TD migration-information HOB parser (TD-report / migration request HOB).
+project: savantenvs/migtd
+target: migration_info_hob
+image: savantenvs/migtd:latest
+
+cmds:
+  - cmd: /mayhem/migration_info_hob
+    libfuzzer: true
+
+testsuite:
+  - https://$MAYHEM_DOMAIN/$MAYHEM_PROJECT/$MAYHEM_TARGET/testsuite.tar

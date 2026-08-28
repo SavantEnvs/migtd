@@ -1,0 +1,487 @@
+// Copyright (c) 2020 Intel Corporation
+//
+// SPDX-License-Identifier: Apache-2.0 or MIT
+
+use crate::common::SpdmCodec;
+use crate::common::SpdmConnectionState;
+use crate::error::SpdmResult;
+use crate::error::SPDM_STATUS_INVALID_MSG_FIELD;
+use crate::error::SPDM_STATUS_INVALID_STATE_LOCAL;
+use crate::error::SPDM_STATUS_INVALID_STATE_PEER;
+use crate::message::*;
+use crate::protocol::*;
+use crate::responder::*;
+
+static PQC_FIRST: bool = false;
+
+impl ResponderContext {
+    pub fn handle_spdm_algorithm<'a>(
+        &mut self,
+        bytes: &[u8],
+        writer: &'a mut Writer,
+    ) -> (SpdmResult, Option<&'a [u8]>) {
+        self.write_spdm_algorithm(bytes, writer)
+    }
+
+    pub fn write_spdm_algorithm<'a>(
+        &mut self,
+        bytes: &[u8],
+        writer: &'a mut Writer,
+    ) -> (SpdmResult, Option<&'a [u8]>) {
+        if self.common.runtime_info.get_connection_state()
+            != SpdmConnectionState::SpdmConnectionAfterCapabilities
+        {
+            self.write_spdm_error(SpdmErrorCode::SpdmErrorUnexpectedRequest, 0, writer);
+            return (
+                Err(SPDM_STATUS_INVALID_STATE_PEER),
+                Some(writer.used_slice()),
+            );
+        }
+        let mut reader = Reader::init(bytes);
+        let message_header = SpdmMessageHeader::read(&mut reader);
+        if let Some(message_header) = message_header {
+            if message_header.version != self.common.negotiate_info.spdm_version_sel {
+                self.write_spdm_error(SpdmErrorCode::SpdmErrorVersionMismatch, 0, writer);
+                return (
+                    Err(SPDM_STATUS_INVALID_MSG_FIELD),
+                    Some(writer.used_slice()),
+                );
+            }
+        } else {
+            self.write_spdm_error(SpdmErrorCode::SpdmErrorInvalidRequest, 0, writer);
+            return (
+                Err(SPDM_STATUS_INVALID_MSG_FIELD),
+                Some(writer.used_slice()),
+            );
+        }
+
+        self.common.reset_buffer_via_request_code(
+            SpdmRequestResponseCode::SpdmRequestNegotiateAlgorithms,
+            None,
+        );
+
+        let other_params_support;
+
+        let negotiate_algorithms =
+            SpdmNegotiateAlgorithmsRequestPayload::spdm_read(&mut self.common, &mut reader);
+        if let Some(negotiate_algorithms) = negotiate_algorithms {
+            debug!("!!! negotiate_algorithms : {:02x?}\n", negotiate_algorithms);
+            other_params_support = negotiate_algorithms.other_params_support;
+            self.common.negotiate_info.measurement_specification_sel =
+                negotiate_algorithms.measurement_specification;
+
+            if self.common.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion13 {
+                if self
+                    .common
+                    .negotiate_info
+                    .req_capabilities_sel
+                    .contains(SpdmRequestCapabilityFlags::MULTI_KEY_CAP_ONLY)
+                {
+                    self.common.negotiate_info.multi_key_conn_req = true;
+                } else if self
+                    .common
+                    .negotiate_info
+                    .req_capabilities_sel
+                    .contains(SpdmRequestCapabilityFlags::MULTI_KEY_CAP_CONN_SEL)
+                {
+                    self.common.negotiate_info.multi_key_conn_req = self
+                        .common
+                        .config_info
+                        .other_params_support
+                        .contains(SpdmAlgoOtherParams::MULTI_KEY_CONN);
+                } else {
+                    self.common.negotiate_info.multi_key_conn_req = false;
+                }
+                if negotiate_algorithms
+                    .other_params_support
+                    .contains(SpdmAlgoOtherParams::MULTI_KEY_CONN)
+                {
+                    if !self
+                        .common
+                        .config_info
+                        .rsp_capabilities
+                        .contains(SpdmResponseCapabilityFlags::MULTI_KEY_CAP_ONLY)
+                        && !self
+                            .common
+                            .config_info
+                            .rsp_capabilities
+                            .contains(SpdmResponseCapabilityFlags::MULTI_KEY_CAP_CONN_SEL)
+                    {
+                        self.write_spdm_error(SpdmErrorCode::SpdmErrorInvalidRequest, 0, writer);
+                        return (
+                            Err(SPDM_STATUS_INVALID_MSG_FIELD),
+                            Some(writer.used_slice()),
+                        );
+                    }
+                    self.common.negotiate_info.multi_key_conn_rsp = true;
+                } else {
+                    if self
+                        .common
+                        .config_info
+                        .rsp_capabilities
+                        .contains(SpdmResponseCapabilityFlags::MULTI_KEY_CAP_ONLY)
+                    {
+                        self.write_spdm_error(SpdmErrorCode::SpdmErrorInvalidRequest, 0, writer);
+                        return (
+                            Err(SPDM_STATUS_INVALID_MSG_FIELD),
+                            Some(writer.used_slice()),
+                        );
+                    }
+                    self.common.negotiate_info.multi_key_conn_rsp = false;
+                }
+            }
+            self.common.negotiate_info.base_hash_sel = negotiate_algorithms.base_hash_algo;
+            self.common.negotiate_info.base_asym_sel = negotiate_algorithms.base_asym_algo;
+            if self.common.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion13
+                && self
+                    .common
+                    .config_info
+                    .rsp_capabilities
+                    .contains(SpdmResponseCapabilityFlags::MEL_CAP)
+            {
+                self.common.negotiate_info.mel_specification_sel =
+                    negotiate_algorithms.mel_specification;
+            } else {
+                self.common.negotiate_info.mel_specification_sel = SpdmMelSpecification::empty();
+            }
+            if self.common.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion14 {
+                self.common.negotiate_info.pqc_asym_sel = negotiate_algorithms.pqc_asym_algo;
+            }
+            for alg in negotiate_algorithms
+                .alg_struct
+                .iter()
+                .take(negotiate_algorithms.alg_struct_count as usize)
+            {
+                match &alg.alg_supported {
+                    SpdmAlg::SpdmAlgoDhe(v) => {
+                        if v.is_valid() {
+                            self.common.negotiate_info.dhe_sel = *v;
+                        } else {
+                            error!("unknown Dhe algorithm structure:{:X?}\n", v.bits());
+                            self.write_spdm_error(
+                                SpdmErrorCode::SpdmErrorInvalidRequest,
+                                0,
+                                writer,
+                            );
+                            return (
+                                Err(SPDM_STATUS_INVALID_MSG_FIELD),
+                                Some(writer.used_slice()),
+                            );
+                        }
+                    }
+                    SpdmAlg::SpdmAlgoAead(v) => {
+                        if v.is_valid() {
+                            self.common.negotiate_info.aead_sel = *v;
+                        } else {
+                            error!("unknown aead algorithm structure:{:X?}\n", v.bits());
+                            self.write_spdm_error(
+                                SpdmErrorCode::SpdmErrorInvalidRequest,
+                                0,
+                                writer,
+                            );
+                            return (
+                                Err(SPDM_STATUS_INVALID_MSG_FIELD),
+                                Some(writer.used_slice()),
+                            );
+                        }
+                    }
+                    SpdmAlg::SpdmAlgoReqAsym(v) => {
+                        if v.is_valid() {
+                            self.common.negotiate_info.req_asym_sel = *v;
+                        } else {
+                            error!("unknown req asym algorithm structure:{:X?}\n", v.bits());
+                            self.write_spdm_error(
+                                SpdmErrorCode::SpdmErrorInvalidRequest,
+                                0,
+                                writer,
+                            );
+                            return (
+                                Err(SPDM_STATUS_INVALID_MSG_FIELD),
+                                Some(writer.used_slice()),
+                            );
+                        }
+                    }
+                    SpdmAlg::SpdmAlgoKeySchedule(v) => {
+                        if v.is_valid() {
+                            self.common.negotiate_info.key_schedule_sel = *v;
+                        } else {
+                            error!("unknown key schedule algorithm structure:{:X?}\n", v.bits());
+                            self.write_spdm_error(
+                                SpdmErrorCode::SpdmErrorInvalidRequest,
+                                0,
+                                writer,
+                            );
+                            return (
+                                Err(SPDM_STATUS_INVALID_MSG_FIELD),
+                                Some(writer.used_slice()),
+                            );
+                        }
+                    }
+                    SpdmAlg::SpdmAlgoPqcReqAsym(v) => {
+                        if self.common.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion14
+                        {
+                            if v.is_valid() {
+                                self.common.negotiate_info.pqc_req_asym_sel = *v;
+                            } else {
+                                error!(
+                                    "unknown pqc_req asym algorithm structure:{:X?}\n",
+                                    v.bits()
+                                );
+                                self.write_spdm_error(
+                                    SpdmErrorCode::SpdmErrorInvalidRequest,
+                                    0,
+                                    writer,
+                                );
+                                return (
+                                    Err(SPDM_STATUS_INVALID_MSG_FIELD),
+                                    Some(writer.used_slice()),
+                                );
+                            }
+                        }
+                    }
+                    SpdmAlg::SpdmAlgoKem(v) => {
+                        if self.common.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion14
+                        {
+                            if v.is_valid() {
+                                self.common.negotiate_info.kem_sel = *v;
+                            } else {
+                                error!("unknown Kem algorithm structure:{:X?}\n", v.bits());
+                                self.write_spdm_error(
+                                    SpdmErrorCode::SpdmErrorInvalidRequest,
+                                    0,
+                                    writer,
+                                );
+                                return (
+                                    Err(SPDM_STATUS_INVALID_MSG_FIELD),
+                                    Some(writer.used_slice()),
+                                );
+                            }
+                        }
+                    }
+                    SpdmAlg::SpdmAlgoUnknown(_v) => {}
+                }
+            }
+        } else {
+            error!("!!! negotiate_algorithms : fail !!!\n");
+            self.write_spdm_error(SpdmErrorCode::SpdmErrorInvalidRequest, 0, writer);
+            return (
+                Err(SPDM_STATUS_INVALID_MSG_FIELD),
+                Some(writer.used_slice()),
+            );
+        }
+
+        if self
+            .common
+            .append_message_a(&bytes[..reader.used()])
+            .is_err()
+        {
+            self.write_spdm_error(SpdmErrorCode::SpdmErrorUnspecified, 0, writer);
+            return (
+                Err(SPDM_STATUS_INVALID_STATE_LOCAL),
+                Some(writer.used_slice()),
+            );
+        }
+
+        self.common
+            .negotiate_info
+            .measurement_specification_sel
+            .prioritize(self.common.config_info.measurement_specification);
+        self.common.negotiate_info.measurement_hash_sel =
+            self.common.config_info.measurement_hash_algo;
+        self.common
+            .negotiate_info
+            .base_hash_sel
+            .prioritize(self.common.config_info.base_hash_algo);
+        self.common
+            .negotiate_info
+            .base_asym_sel
+            .prioritize(self.common.config_info.base_asym_algo);
+        self.common
+            .negotiate_info
+            .pqc_asym_sel
+            .prioritize(self.common.config_info.pqc_asym_algo);
+        self.common
+            .negotiate_info
+            .mel_specification_sel
+            .prioritize(self.common.config_info.mel_specification);
+        self.common
+            .negotiate_info
+            .dhe_sel
+            .prioritize(self.common.config_info.dhe_algo);
+        self.common
+            .negotiate_info
+            .aead_sel
+            .prioritize(self.common.config_info.aead_algo);
+        self.common
+            .negotiate_info
+            .req_asym_sel
+            .prioritize(self.common.config_info.req_asym_algo);
+        self.common
+            .negotiate_info
+            .key_schedule_sel
+            .prioritize(self.common.config_info.key_schedule_algo);
+        if self.common.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion14 {
+            self.common
+                .negotiate_info
+                .pqc_req_asym_sel
+                .prioritize(self.common.config_info.pqc_req_asym_algo);
+            self.common
+                .negotiate_info
+                .kem_sel
+                .prioritize(self.common.config_info.kem_algo);
+
+            if self.common.negotiate_info.pqc_asym_sel.is_valid()
+                && self.common.negotiate_info.base_asym_sel.is_valid()
+            {
+                if PQC_FIRST {
+                    self.common.negotiate_info.base_asym_sel = SpdmBaseAsymAlgo::empty();
+                } else {
+                    self.common.negotiate_info.pqc_asym_sel = SpdmPqcAsymAlgo::empty();
+                }
+            }
+            if self.common.negotiate_info.pqc_req_asym_sel.is_valid()
+                && self.common.negotiate_info.req_asym_sel.is_valid()
+            {
+                if PQC_FIRST {
+                    self.common.negotiate_info.req_asym_sel = SpdmReqAsymAlgo::empty();
+                } else {
+                    self.common.negotiate_info.pqc_req_asym_sel = SpdmPqcReqAsymAlgo::empty();
+                }
+            }
+            if self.common.negotiate_info.kem_sel.is_valid()
+                && self.common.negotiate_info.dhe_sel.is_valid()
+            {
+                if PQC_FIRST {
+                    self.common.negotiate_info.dhe_sel = SpdmDheAlgo::empty();
+                } else {
+                    self.common.negotiate_info.kem_sel = SpdmKemAlgo::empty();
+                }
+            }
+        }
+        //
+        // update cert chain - append root cert hash
+        //
+        if self.common.construct_my_cert_chain().is_err() {
+            self.write_spdm_error(SpdmErrorCode::SpdmErrorUnspecified, 0, writer);
+            return (
+                Err(SPDM_STATUS_INVALID_STATE_LOCAL),
+                Some(writer.used_slice()),
+            );
+        }
+
+        info!("send spdm algorithm\n");
+
+        let mut other_params_selection = SpdmAlgoOtherParams::empty();
+
+        if self.common.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion12 {
+            other_params_selection
+                .insert(other_params_support & self.common.config_info.other_params_support);
+        }
+
+        if self.common.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion13 {
+            if self
+                .common
+                .negotiate_info
+                .req_capabilities_sel
+                .contains(SpdmRequestCapabilityFlags::MULTI_KEY_CAP_ONLY)
+            {
+                other_params_selection.insert(SpdmAlgoOtherParams::MULTI_KEY_CONN);
+            }
+            if self
+                .common
+                .negotiate_info
+                .req_capabilities_sel
+                .contains(SpdmRequestCapabilityFlags::MULTI_KEY_CAP_CONN_SEL)
+                && self
+                    .common
+                    .config_info
+                    .other_params_support
+                    .contains(SpdmAlgoOtherParams::MULTI_KEY_CONN)
+            {
+                other_params_selection.insert(SpdmAlgoOtherParams::MULTI_KEY_CONN);
+            }
+        }
+
+        self.common.negotiate_info.other_params_support = other_params_selection;
+
+        let mut alg_struct_count = 0;
+        let mut alg_struct: [SpdmAlgStruct; MAX_SUPPORTED_ALG_STRUCTURE_COUNT] =
+            gen_array_clone(SpdmAlgStruct::default(), MAX_SUPPORTED_ALG_STRUCTURE_COUNT);
+        if self.common.negotiate_info.dhe_sel.is_valid() {
+            alg_struct[alg_struct_count].alg_type = SpdmAlgType::SpdmAlgTypeDHE;
+            alg_struct[alg_struct_count].alg_supported =
+                SpdmAlg::SpdmAlgoDhe(self.common.negotiate_info.dhe_sel);
+            alg_struct_count += 1;
+        }
+        if self.common.negotiate_info.aead_sel.is_valid() {
+            alg_struct[alg_struct_count].alg_type = SpdmAlgType::SpdmAlgTypeAEAD;
+            alg_struct[alg_struct_count].alg_supported =
+                SpdmAlg::SpdmAlgoAead(self.common.negotiate_info.aead_sel);
+            alg_struct_count += 1;
+        }
+        if self.common.negotiate_info.req_asym_sel.is_valid() {
+            alg_struct[alg_struct_count].alg_type = SpdmAlgType::SpdmAlgTypeReqAsym;
+            alg_struct[alg_struct_count].alg_supported =
+                SpdmAlg::SpdmAlgoReqAsym(self.common.negotiate_info.req_asym_sel);
+            alg_struct_count += 1;
+        }
+        if self.common.negotiate_info.key_schedule_sel.is_valid() {
+            alg_struct[alg_struct_count].alg_type = SpdmAlgType::SpdmAlgTypeKeySchedule;
+            alg_struct[alg_struct_count].alg_supported =
+                SpdmAlg::SpdmAlgoKeySchedule(self.common.negotiate_info.key_schedule_sel);
+            alg_struct_count += 1;
+        }
+        if self.common.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion14 {
+            if self.common.negotiate_info.pqc_req_asym_sel.is_valid() {
+                alg_struct[alg_struct_count].alg_type = SpdmAlgType::SpdmAlgTypePqcReqAsym;
+                alg_struct[alg_struct_count].alg_supported =
+                    SpdmAlg::SpdmAlgoPqcReqAsym(self.common.negotiate_info.pqc_req_asym_sel);
+                alg_struct_count += 1;
+            }
+            if self.common.negotiate_info.kem_sel.is_valid() {
+                alg_struct[alg_struct_count].alg_type = SpdmAlgType::SpdmAlgTypeKEM;
+                alg_struct[alg_struct_count].alg_supported =
+                    SpdmAlg::SpdmAlgoKem(self.common.negotiate_info.kem_sel);
+                alg_struct_count += 1;
+            }
+        }
+
+        let response = SpdmMessage {
+            header: SpdmMessageHeader {
+                version: self.common.negotiate_info.spdm_version_sel,
+                request_response_code: SpdmRequestResponseCode::SpdmResponseAlgorithms,
+            },
+            payload: SpdmMessagePayload::SpdmAlgorithmsResponse(SpdmAlgorithmsResponsePayload {
+                measurement_specification_sel: self
+                    .common
+                    .negotiate_info
+                    .measurement_specification_sel,
+                other_params_selection,
+                measurement_hash_algo: self.common.negotiate_info.measurement_hash_sel,
+                base_asym_sel: self.common.negotiate_info.base_asym_sel,
+                base_hash_sel: self.common.negotiate_info.base_hash_sel,
+                pqc_asym_sel: self.common.negotiate_info.pqc_asym_sel,
+                mel_specification_sel: self.common.negotiate_info.mel_specification_sel,
+                alg_struct_count: alg_struct_count as u8,
+                alg_struct,
+            }),
+        };
+        let res = response.spdm_encode(&mut self.common, writer);
+        if res.is_err() {
+            self.write_spdm_error(SpdmErrorCode::SpdmErrorUnspecified, 0, writer);
+            return (
+                Err(SPDM_STATUS_INVALID_STATE_LOCAL),
+                Some(writer.used_slice()),
+            );
+        }
+        if self.common.append_message_a(writer.used_slice()).is_err() {
+            self.write_spdm_error(SpdmErrorCode::SpdmErrorUnspecified, 0, writer);
+            return (
+                Err(SPDM_STATUS_INVALID_STATE_LOCAL),
+                Some(writer.used_slice()),
+            );
+        }
+
+        (Ok(()), Some(writer.used_slice()))
+    }
+}

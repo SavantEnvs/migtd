@@ -1,0 +1,14 @@
+# migtd in-process libFuzzer target (upstream src/migtd/fuzz/fuzz_targets/
+# service_response.rs): feeds fuzz bytes to VmcallServiceResponse::try_read +
+# read_data::<ServiceQueryResponse> — the VMCALL/SPDM migration service response
+# framing parser.
+project: savantenvs/migtd
+target: service_response
+image: savantenvs/migtd:latest
+
+cmds:
+  - cmd: /mayhem/service_response
+    libfuzzer: true
+
+testsuite:
+  - https://$MAYHEM_DOMAIN/$MAYHEM_PROJECT/$MAYHEM_TARGET/testsuite.tar

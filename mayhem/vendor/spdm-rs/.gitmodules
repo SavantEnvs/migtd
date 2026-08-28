@@ -1,0 +1,3 @@
+[submodule "external/ring"]
+	path = external/ring
+	url = https://github.com/briansmith/ring.git

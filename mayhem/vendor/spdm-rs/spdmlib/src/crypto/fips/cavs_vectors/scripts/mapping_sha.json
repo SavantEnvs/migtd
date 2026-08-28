@@ -1,0 +1,4 @@
+{
+    "Msg": {"name": "msg", "type": "&'a [u8]", "attr": ""},
+    "MD": {"name": "md", "type": "&'a [u8]", "attr": ""}
+}

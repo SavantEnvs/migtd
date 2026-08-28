@@ -1,0 +1,14 @@
+# migtd in-process libFuzzer target (upstream src/policy/fuzz/fuzz_targets/policy.rs):
+# feeds fuzz bytes to serde_json::from_slice::<policy::MigPolicy> — the migration
+# policy (MigPolicy) JSON parser that validates untrusted policy documents.
+project: savantenvs/migtd
+target: policy
+image: savantenvs/migtd:latest
+
+cmds:
+  - cmd: /mayhem/policy
+    libfuzzer: true
+
+testsuite:
+  - https://$MAYHEM_DOMAIN/$MAYHEM_PROJECT/$MAYHEM_TARGET/testsuite.tar
+  - file://mayhem/policy/testsuite

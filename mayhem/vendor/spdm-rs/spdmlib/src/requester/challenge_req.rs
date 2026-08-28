@@ -1,0 +1,396 @@
+// Copyright (c) 2020 Intel Corporation
+//
+// SPDX-License-Identifier: Apache-2.0 or MIT
+
+use crate::crypto;
+#[cfg(feature = "hashed-transcript-data")]
+use crate::error::SPDM_STATUS_INVALID_STATE_LOCAL;
+use crate::error::{
+    SpdmResult, SPDM_STATUS_BUFFER_FULL, SPDM_STATUS_CRYPTO_ERROR, SPDM_STATUS_ERROR_PEER,
+    SPDM_STATUS_INVALID_MSG_FIELD, SPDM_STATUS_INVALID_PARAMETER, SPDM_STATUS_VERIF_FAIL,
+};
+use crate::message::*;
+use crate::protocol::*;
+use crate::requester::*;
+
+impl RequesterContext {
+    #[maybe_async::maybe_async]
+    pub async fn send_spdm_challenge(
+        &mut self,
+        slot_id: u8,
+        measurement_summary_hash_type: SpdmMeasurementSummaryHashType,
+        requester_context_struct: Option<&SpdmChallengeContextStruct>,
+        send_buffer: &mut [u8],
+    ) -> SpdmResult<usize> {
+        info!("!!! send challenge !!!");
+        if slot_id >= SPDM_MAX_SLOT_NUMBER as u8 {
+            return Err(SPDM_STATUS_INVALID_PARAMETER);
+        }
+
+        self.common
+            .reset_buffer_via_request_code(SpdmRequestResponseCode::SpdmRequestChallenge, None);
+
+        let requester_context = requester_context_struct.cloned().unwrap_or_default();
+
+        let send_used = self.encode_spdm_challenge(
+            slot_id,
+            measurement_summary_hash_type,
+            send_buffer,
+            &requester_context,
+        )?;
+        self.send_message(None, &send_buffer[..send_used], false)
+            .await?;
+        Ok(send_used)
+    }
+
+    #[maybe_async::maybe_async]
+    pub async fn receive_spdm_challenge(
+        &mut self,
+        slot_id: u8,
+        measurement_summary_hash_type: SpdmMeasurementSummaryHashType,
+        requester_context: SpdmChallengeContextStruct,
+        send_buffer: &[u8],
+    ) -> SpdmResult {
+        info!("!!! receive challenge !!!");
+        let mut receive_buffer = [0u8; config::MAX_SPDM_MSG_SIZE];
+        let used = self
+            .receive_message(None, &mut receive_buffer, true)
+            .await?;
+        self.handle_spdm_challenge_response(
+            0, // NULL
+            slot_id,
+            measurement_summary_hash_type,
+            requester_context,
+            send_buffer,
+            &receive_buffer[..used],
+        )
+    }
+
+    #[maybe_async::maybe_async]
+    pub async fn send_receive_spdm_challenge(
+        &mut self,
+        slot_id: u8,
+        measurement_summary_hash_type: SpdmMeasurementSummaryHashType,
+        requester_context_struct: Option<SpdmChallengeContextStruct>,
+    ) -> SpdmResult {
+        info!("send spdm challenge\n");
+
+        let requester_context = requester_context_struct.as_ref();
+        let mut send_buffer = [0u8; config::MAX_SPDM_MSG_SIZE];
+        let send_used = self
+            .send_spdm_challenge(
+                slot_id,
+                measurement_summary_hash_type,
+                requester_context,
+                &mut send_buffer,
+            )
+            .await?;
+
+        self.receive_spdm_challenge(
+            slot_id,
+            measurement_summary_hash_type,
+            requester_context_struct.unwrap_or_default(),
+            &send_buffer[..send_used],
+        )
+        .await
+    }
+
+    pub fn encode_spdm_challenge(
+        &mut self,
+        slot_id: u8,
+        measurement_summary_hash_type: SpdmMeasurementSummaryHashType,
+        buf: &mut [u8],
+        requester_context: &SpdmChallengeContextStruct,
+    ) -> SpdmResult<usize> {
+        let mut writer = Writer::init(buf);
+
+        let mut nonce = [0u8; SPDM_NONCE_SIZE];
+        crypto::rand::get_random(&mut nonce)?;
+
+        let request = SpdmMessage {
+            header: SpdmMessageHeader {
+                version: self.common.negotiate_info.spdm_version_sel,
+                request_response_code: SpdmRequestResponseCode::SpdmRequestChallenge,
+            },
+            payload: SpdmMessagePayload::SpdmChallengeRequest(SpdmChallengeRequestPayload {
+                slot_id,
+                measurement_summary_hash_type,
+                nonce: SpdmNonceStruct { data: nonce },
+                context: requester_context.clone(),
+            }),
+        };
+        request.spdm_encode(&mut self.common, &mut writer)
+    }
+
+    pub fn handle_spdm_challenge_response(
+        &mut self,
+        session_id: u32,
+        slot_id: u8,
+        measurement_summary_hash_type: SpdmMeasurementSummaryHashType,
+        requester_context: SpdmChallengeContextStruct,
+        send_buffer: &[u8],
+        receive_buffer: &[u8],
+    ) -> SpdmResult {
+        self.common.runtime_info.need_measurement_summary_hash = (measurement_summary_hash_type
+            == SpdmMeasurementSummaryHashType::SpdmMeasurementSummaryHashTypeTcb)
+            || (measurement_summary_hash_type
+                == SpdmMeasurementSummaryHashType::SpdmMeasurementSummaryHashTypeAll);
+
+        let mut reader = Reader::init(receive_buffer);
+        match SpdmMessageHeader::read(&mut reader) {
+            Some(message_header) => {
+                if message_header.version != self.common.negotiate_info.spdm_version_sel {
+                    return Err(SPDM_STATUS_INVALID_MSG_FIELD);
+                }
+                match message_header.request_response_code {
+                    SpdmRequestResponseCode::SpdmResponseChallengeAuth => {
+                        let challenge_auth = SpdmChallengeAuthResponsePayload::spdm_read(
+                            &mut self.common,
+                            &mut reader,
+                        );
+                        let used = reader.used();
+                        if let Some(challenge_auth) = challenge_auth {
+                            debug!("!!! challenge_auth : {:02x?}\n", challenge_auth);
+
+                            // verify context
+                            if self.common.negotiate_info.spdm_version_sel
+                                >= SpdmVersion::SpdmVersion13
+                                && challenge_auth.requester_context.data != requester_context.data
+                            {
+                                error!("!!! challenge_auth : fail !!!\n");
+                                return Err(SPDM_STATUS_INVALID_MSG_FIELD);
+                            }
+
+                            if self
+                                .verify_challenge_auth_cert_chain_hash(
+                                    slot_id,
+                                    &challenge_auth.cert_chain_hash,
+                                )
+                                .is_err()
+                            {
+                                error!("verify_challenge_auth_cert_chain_hash fail");
+                                self.common.reset_message_b();
+                                self.common.reset_message_c();
+                                return Err(SPDM_STATUS_VERIF_FAIL);
+                            }
+
+                            // verify signature
+                            let signature_size = self.common.get_asym_sig_size() as usize;
+                            let temp_used = used - signature_size;
+
+                            self.common.append_message_c(send_buffer)?;
+                            self.common.append_message_c(&receive_buffer[..temp_used])?;
+
+                            if self
+                                .verify_challenge_auth_signature(slot_id, &challenge_auth.signature)
+                                .is_err()
+                            {
+                                error!("verify_challenge_auth_signature fail");
+                                self.common.reset_message_b();
+                                self.common.reset_message_c();
+                                return Err(SPDM_STATUS_VERIF_FAIL);
+                            } else {
+                                self.common.reset_message_b();
+                                self.common.reset_message_c();
+                                info!("verify_challenge_auth_signature pass");
+                            }
+
+                            Ok(())
+                        } else {
+                            error!("!!! challenge_auth : fail !!!\n");
+                            Err(SPDM_STATUS_INVALID_MSG_FIELD)
+                        }
+                    }
+                    SpdmRequestResponseCode::SpdmResponseError => self
+                        .spdm_handle_error_response_main(
+                            Some(session_id),
+                            receive_buffer,
+                            SpdmRequestResponseCode::SpdmRequestChallenge,
+                            SpdmRequestResponseCode::SpdmResponseChallengeAuth,
+                        ),
+                    _ => Err(SPDM_STATUS_ERROR_PEER),
+                }
+            }
+            None => Err(SPDM_STATUS_INVALID_MSG_FIELD),
+        }
+    }
+
+    pub fn verify_challenge_auth_cert_chain_hash(
+        &self,
+        slot_id: u8,
+        cert_chain_hash: &SpdmDigestStruct,
+    ) -> SpdmResult {
+        let peer_cert_chain_hash;
+        let expected_cert_chain_hash = if slot_id == SPDM_PUB_KEY_SLOT_ID_CHALLENGE {
+            let peer_pub_key = self
+                .common
+                .provision_info
+                .peer_pub_key
+                .as_ref()
+                .ok_or(SPDM_STATUS_INVALID_PARAMETER)?;
+            peer_cert_chain_hash = crypto::hash::hash_all(
+                self.common.negotiate_info.base_hash_sel,
+                peer_pub_key.as_ref(),
+            );
+            peer_cert_chain_hash.as_ref()
+        } else {
+            peer_cert_chain_hash = crypto::hash::hash_all(
+                self.common.negotiate_info.base_hash_sel,
+                self.common.peer_info.peer_cert_chain[slot_id as usize]
+                    .as_ref()
+                    .ok_or(SPDM_STATUS_INVALID_PARAMETER)?
+                    .as_ref(),
+            );
+            peer_cert_chain_hash.as_ref()
+        };
+
+        if expected_cert_chain_hash.is_none() {
+            error!("peer_cert_chain is not populated or public key is not provisioned!\n");
+            return Err(SPDM_STATUS_INVALID_PARAMETER);
+        }
+
+        let expected_cert_chain_hash = expected_cert_chain_hash.unwrap();
+
+        if cert_chain_hash.data_size != expected_cert_chain_hash.data_size
+            || cert_chain_hash.data[..cert_chain_hash.data_size as usize]
+                != expected_cert_chain_hash.data[..expected_cert_chain_hash.data_size as usize]
+        {
+            error!("cert_chain_hash - {:02x?}\n", cert_chain_hash);
+            error!(
+                "expected_cert_chain_hash - {:02x?}\n",
+                expected_cert_chain_hash
+            );
+            return Err(SPDM_STATUS_VERIF_FAIL);
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "hashed-transcript-data")]
+    pub fn verify_challenge_auth_signature(
+        &self,
+        slot_id: u8,
+        signature: &SpdmSignatureStruct,
+    ) -> SpdmResult {
+        let message_m1m2_hash = crypto::hash::hash_ctx_finalize(
+            self.common
+                .runtime_info
+                .digest_context_m1m2
+                .as_ref()
+                .cloned()
+                .ok_or(SPDM_STATUS_CRYPTO_ERROR)?,
+        )
+        .ok_or(SPDM_STATUS_CRYPTO_ERROR)?;
+        debug!("message_m1m2_hash - {:02x?}", message_m1m2_hash.as_ref());
+
+        if self.common.peer_info.peer_cert_chain[slot_id as usize].is_none() {
+            error!("peer_cert_chain is not populated!\n");
+            return Err(SPDM_STATUS_INVALID_PARAMETER);
+        }
+
+        let cert_chain_data = &self.common.peer_info.peer_cert_chain[slot_id as usize]
+            .as_ref()
+            .ok_or(SPDM_STATUS_INVALID_PARAMETER)?
+            .data[(4usize + self.common.get_hash_size() as usize)
+            ..(self.common.peer_info.peer_cert_chain[slot_id as usize]
+                .as_ref()
+                .ok_or(SPDM_STATUS_INVALID_PARAMETER)?
+                .data_size as usize)];
+
+        let mut message_sign = ManagedBuffer12Sign::default();
+
+        if self.common.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion12 {
+            message_sign.reset_message();
+            message_sign
+                .append_message(&self.common.get_signing_prefix_context())
+                .ok_or(SPDM_STATUS_BUFFER_FULL)?;
+            message_sign
+                .append_message(&SPDM_VERSION_SIGNING_CONTEXT_ZEROPAD_4)
+                .ok_or(SPDM_STATUS_BUFFER_FULL)?;
+            message_sign
+                .append_message(&SPDM_CHALLENGE_AUTH_SIGN_CONTEXT)
+                .ok_or(SPDM_STATUS_BUFFER_FULL)?;
+            message_sign
+                .append_message(message_m1m2_hash.as_ref())
+                .ok_or(SPDM_STATUS_BUFFER_FULL)?;
+        } else {
+            error!("hashed-transcript-data is unsupported in SPDM 1.0/1.1 signing verification!\n");
+            return Err(SPDM_STATUS_INVALID_STATE_LOCAL);
+        }
+
+        crypto::spdm_asym_verify(
+            self.common.negotiate_info.base_hash_sel,
+            self.common.negotiate_info.base_asym_sel,
+            self.common.negotiate_info.pqc_asym_sel,
+            SpdmDer::SpdmDerCertChain(cert_chain_data),
+            message_sign.as_ref(),
+            signature,
+        )
+    }
+
+    #[cfg(not(feature = "hashed-transcript-data"))]
+    pub fn verify_challenge_auth_signature(
+        &self,
+        slot_id: u8,
+        signature: &SpdmSignatureStruct,
+    ) -> SpdmResult {
+        let mut message_m1m2 = ManagedBufferM1M2::default();
+        message_m1m2
+            .append_message(self.common.runtime_info.message_a.as_ref())
+            .ok_or(SPDM_STATUS_BUFFER_FULL)?;
+        message_m1m2
+            .append_message(self.common.runtime_info.message_b.as_ref())
+            .ok_or(SPDM_STATUS_BUFFER_FULL)?;
+        message_m1m2
+            .append_message(self.common.runtime_info.message_c.as_ref())
+            .ok_or(SPDM_STATUS_BUFFER_FULL)?;
+
+        // we dont need create message hash for verify
+        // we just print message hash for debug purpose
+        let message_m1m2_hash = crypto::hash::hash_all(
+            self.common.negotiate_info.base_hash_sel,
+            message_m1m2.as_ref(),
+        )
+        .ok_or(SPDM_STATUS_CRYPTO_ERROR)?;
+        debug!("message_m1m2_hash - {:02x?}", message_m1m2_hash.as_ref());
+
+        if self.common.peer_info.peer_cert_chain[slot_id as usize].is_none() {
+            error!("peer_cert_chain is not populated!\n");
+            return Err(SPDM_STATUS_INVALID_PARAMETER);
+        }
+
+        let cert_chain_data = &self.common.peer_info.peer_cert_chain[slot_id as usize]
+            .as_ref()
+            .ok_or(SPDM_STATUS_INVALID_PARAMETER)?
+            .data[(4usize + self.common.get_hash_size() as usize)
+            ..(self.common.peer_info.peer_cert_chain[slot_id as usize]
+                .as_ref()
+                .ok_or(SPDM_STATUS_INVALID_PARAMETER)?
+                .data_size as usize)];
+
+        if self.common.negotiate_info.spdm_version_sel >= SpdmVersion::SpdmVersion12 {
+            message_m1m2.reset_message();
+            message_m1m2
+                .append_message(&self.common.get_signing_prefix_context())
+                .ok_or(SPDM_STATUS_BUFFER_FULL)?;
+            message_m1m2
+                .append_message(&SPDM_VERSION_SIGNING_CONTEXT_ZEROPAD_4)
+                .ok_or(SPDM_STATUS_BUFFER_FULL)?;
+            message_m1m2
+                .append_message(&SPDM_CHALLENGE_AUTH_SIGN_CONTEXT)
+                .ok_or(SPDM_STATUS_BUFFER_FULL)?;
+            message_m1m2
+                .append_message(message_m1m2_hash.as_ref())
+                .ok_or(SPDM_STATUS_BUFFER_FULL)?;
+        }
+
+        crypto::spdm_asym_verify(
+            self.common.negotiate_info.base_hash_sel,
+            self.common.negotiate_info.base_asym_sel,
+            self.common.negotiate_info.pqc_asym_sel,
+            SpdmDer::SpdmDerCertChain(cert_chain_data),
+            message_m1m2.as_ref(),
+            signature,
+        )
+    }
+}

@@ -1,0 +1,41 @@
+From cb642a27fb14b73462e96f6e2102f8a0374bdc80 Mon Sep 17 00:00:00 2001
+From: Stanislaw Grams <stanislaw.grams@intel.com>
+Date: Mon, 26 Jan 2026 12:40:00 +0100
+Subject: [PATCH] introduce EphemeralPrivateKey serialization
+
+Signed-off-by: Stanislaw Grams <stanislaw.grams@intel.com>
+---
+ src/agreement.rs | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/src/agreement.rs b/src/agreement.rs
+index 770423f2b..207a37de2 100644
+--- a/src/agreement.rs
++++ b/src/agreement.rs
+@@ -153,6 +153,23 @@ impl EphemeralPrivateKey {
+     pub(super) fn bytes_for_test(&self) -> &[u8] {
+         self.private_key.bytes_less_safe()
+     }
++
++    /// Export the private key bytes for secure storage (e.g., checkpoint/resume).
++    /// This is intended for serialization to secure storage only.
++    pub fn export_private_key_bytes(&self) -> &[u8] {
++        self.private_key.bytes_less_safe()
++    }
++
++    /// Construct an ephemeral private key from raw bytes.
++    /// This is intended for deserialization from secure storage only.
++    pub fn from_private_key_bytes(alg: &'static Algorithm, bytes: &[u8]) -> Result<Self, error::Unspecified> {
++        let private_key =
++            ec::Seed::from_bytes(alg.curve, untrusted::Input::from(bytes), cpu::features())?;
++        Ok(EphemeralPrivateKey {
++            private_key,
++            algorithm: alg,
++        })
++    }
+ }
+ 
+ /// A public key for key agreement.
+-- 
+2.52.0
+
